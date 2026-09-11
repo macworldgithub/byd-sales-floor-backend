@@ -1,9 +1,9 @@
 /**
  * server.js – Main Express Application Entry Point
  */
-const dns = require('dns')
-dns.setDefaultResultOrder('ipv4first');
-dns.setServers(['8.8.8.8', '8.8.4.4']);
+// const dns = require('dns')
+// dns.setDefaultResultOrder('ipv4first');
+// dns.setServers(['8.8.8.8', '8.8.4.4']);
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -57,7 +57,11 @@ app.use((req, res, next) => {
 app.use(errorHandler);
 
 // ─── Start Server ───────────────────────────────────────────────────────────
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-  console.log(`🚀 BYD Sales Floor API running on port ${PORT}`);
-});
+if (require.main === module) {
+  const PORT = process.env.PORT || 5000;
+  app.listen(PORT, () => {
+    console.log(`🚀 BYD Sales Floor API running on port ${PORT}`);
+  });
+}
+
+module.exports = app;
