@@ -63,6 +63,7 @@ app.use('/api/messages', require('./routes/messages'));
 
 app.use('/api/stats', require('./routes/stats'));
 app.use('/api/search', require('./routes/search'));
+app.use('/api/webhooks', require('./routes/webhooks'));
 
 // ─── Error Handling ─────────────────────────────────────────────────────────
 app.use((req, res, next) => {

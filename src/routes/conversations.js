@@ -65,6 +65,9 @@ router.get('/:id', async (req, res, next) => {
   }
 });
 
+const Message = require('../models/delivery/Message');
+const mobileMessageService = require('../services/mobileMessage');
+
 // ─── POST /api/conversations/:id/messages ────────────────────────────────────
 router.post(
   '/:id/messages',
@@ -82,12 +85,46 @@ router.post(
       const conversation = await Conversation.findById(req.params.id);
       if (!conversation) return res.status(404).json({ success: false, message: 'Conversation not found.' });
 
+      const senderType = req.body.sender || 'agent';
+      let providerMessageId = null;
+      let sendStatus = 'sent';
+
+      // If sent by agent or AI and phone exists, dispatch real SMS via MobileMessage
+      if (['agent', 'ai'].includes(senderType) && conversation.phone) {
+        try {
+          const sendResult = await mobileMessageService.sendSms({
+            to: conversation.phone,
+            message: req.body.text,
+            customRef: String(conversation._id),
+          });
+          providerMessageId = sendResult.messageId;
+          sendStatus = sendResult.status === 'success' || sendResult.status === 'sent' ? 'sent' : sendResult.status;
+
+          // Record in Delivery Centre Message collection
+          await Message.create({
+            client_name: conversation.prospectName,
+            phone: conversation.phone,
+            body: req.body.text,
+            direction: 'outbound',
+            status: sendStatus,
+            provider: 'mobilemessage',
+            provider_message_id: providerMessageId,
+            sent_by_id: req.user ? req.user.id : null,
+            sent_by_name: req.user ? (req.user.name || req.user.email) : 'Agent',
+            sent_at: new Date(),
+          }).catch((mErr) => console.error('Error logging Message model:', mErr.message));
+        } catch (smsErr) {
+          console.error('Failed to dispatch SMS via MobileMessage:', smsErr.message);
+          sendStatus = 'failed';
+        }
+      }
+
       const newMessage = {
-        id: require('crypto').randomUUID ? require('crypto').randomUUID() : Date.now().toString(36),
-        sender: req.body.sender || 'agent',
+        id: providerMessageId || (require('crypto').randomUUID ? require('crypto').randomUUID() : Date.now().toString(36)),
+        sender: senderType,
         text: req.body.text,
         time: new Date().toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit' }),
-        status: 'sent',
+        status: sendStatus,
         createdAt: new Date(),
       };
 
