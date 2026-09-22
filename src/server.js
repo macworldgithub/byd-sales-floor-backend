@@ -13,7 +13,7 @@ const morgan = require('morgan');
 const errorHandler = require('./middleware/errorHandler');
 
 // ─── Initialize DB Connections ──────────────────────────────────────────────
-require('./db');
+const { ensureDbConnected } = require('./db');
 
 const app = express();
 
@@ -26,6 +26,21 @@ app.use(cors({
 }));
 app.use(express.json());
 app.use(morgan('dev'));
+
+// DB Connection Readiness Middleware for serverless environments
+app.use(async (req, res, next) => {
+  if (req.path === '/api/health' || req.method === 'OPTIONS') return next();
+  try {
+    await ensureDbConnected();
+    next();
+  } catch (err) {
+    return res.status(503).json({
+      success: false,
+      message: 'Database connection failed. Please ensure MongoDB Atlas Network Access has 0.0.0.0/0 whitelisted and environment variables (LEAD_CENTER_MONGO_URI, DELIVERY_CENTER_MONGO_URI) are set on Vercel.',
+      error: err.message,
+    });
+  }
+});
 
 // ─── Routes ─────────────────────────────────────────────────────────────────
 app.get('/api/health', (req, res) => {
