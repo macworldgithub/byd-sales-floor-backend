@@ -1,9 +1,3 @@
-/**
- * server.js – Main Express Application Entry Point
- */
-const dns = require('dns')
-dns.setDefaultResultOrder('ipv4first');
-dns.setServers(['8.8.8.8', '8.8.4.4']);
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -17,10 +11,41 @@ const { ensureDbConnected } = require('./db');
 
 const app = express();
 
+// Parse and normalize allowed CORS origins (handles trailing slashes, whitespace, and missing protocols)
+const parseAllowedOrigins = () => {
+  if (!process.env.ALLOWED_ORIGINS) return '*';
+  const origins = process.env.ALLOWED_ORIGINS
+    .split(',')
+    .map(o => o.trim().replace(/\/+$/, ''))
+    .filter(Boolean);
+
+  if (origins.includes('*')) return '*';
+
+  const set = new Set();
+  origins.forEach(origin => {
+    set.add(origin);
+    if (!origin.startsWith('http://') && !origin.startsWith('https://')) {
+      set.add(`https://${origin}`);
+      set.add(`http://${origin}`);
+    }
+  });
+  return Array.from(set);
+};
+
+const allowedOrigins = parseAllowedOrigins();
+
 // ─── Middleware ─────────────────────────────────────────────────────────────
 app.use(helmet());
 app.use(cors({
-  origin: process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : '*',
+  origin: (origin, callback) => {
+    // Allow requests with no origin (curl, server-to-server, health checks)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins === '*' || allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    return callback(null, false);
+  },
+  credentials: true,
   methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
