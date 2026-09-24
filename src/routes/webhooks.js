@@ -153,4 +153,84 @@ router.post('/mobilemessage/status', async (req, res, next) => {
   }
 });
 
+// ─── 3. Lead Centre Webhook (§7.3 & §7.4) ───────────────────────────────────
+router.post('/lead-centre', async (req, res, next) => {
+  try {
+    const { event_id, event, source, customer_keys = {}, payload = {} } = req.body;
+    const crmService = require('../services/crmService');
+
+    if (event === 'lead.allocated') {
+      // Inbound allocation from Lead Centre
+      const customer = await crmService.getCustomers({ q: customer_keys.phone || payload.phone });
+      let targetCust = customer[0];
+      if (!targetCust && payload.name && (payload.phone || customer_keys.phone)) {
+        targetCust = await crmService.createCustomer({
+          name: payload.name,
+          phone: customer_keys.phone || payload.phone,
+          email: customer_keys.email || payload.email,
+          site: payload.site || 'Fairfield',
+          source: 'Autogate',
+          lead_prospect_id: payload.prospect_id,
+        }).catch(() => null);
+      }
+    } else if (event === 'lead.status_changed' && payload.status === 'opted out') {
+      const customers = await crmService.getCustomers({ q: customer_keys.phone });
+      if (customers[0]) {
+        await crmService.updateCustomer(customers[0].customer_id, { do_not_contact: true });
+      }
+    }
+
+    return res.status(200).json({ success: true, event_id, message: 'Lead Centre webhook processed' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── 4. Virtual Yard Webhook (§7.3 & §7.4) ──────────────────────────────────
+router.post('/virtual-yard', async (req, res, next) => {
+  try {
+    const { event_id, event, payload = {} } = req.body;
+    return res.status(200).json({ success: true, event_id, message: 'Virtual Yard webhook processed' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── 5. Sales Log Reconcile Webhook (§7.3 & §7.4) ───────────────────────────
+router.post('/sales-log', async (req, res, next) => {
+  try {
+    const { event_id, payload = {} } = req.body;
+    const crmService = require('../services/crmService');
+    if (payload.sales_log_id) {
+      await crmService.reconcileSalesLogRow(payload.sales_log_id);
+    }
+    return res.status(200).json({ success: true, event_id, message: 'Sales Log reconcile processed' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── 6. Delivery Centre Webhook (§7.3 & §7.4, AC-3, AC-9) ───────────────────
+router.post('/delivery', async (req, res, next) => {
+  try {
+    const { event_id, event, client_id, payload = {} } = req.body;
+    const crmService = require('../services/crmService');
+
+    // If Delivery comment added or stage changed, project onto matching CRM opportunity
+    if (event === 'delivery.stage_changed' && payload.new_stage) {
+      const opps = await crmService.getOpportunities();
+      const matchingOpp = opps.find((o) => o.delivery_client_id === client_id);
+      if (matchingOpp) {
+        await crmService.updateOpportunity(matchingOpp.opportunity_id, {
+          delivery_stage: payload.new_stage,
+        });
+      }
+    }
+
+    return res.status(200).json({ success: true, event_id, message: 'Delivery Centre webhook processed' });
+  } catch (err) {
+    next(err);
+  }
+});
+
 module.exports = router;

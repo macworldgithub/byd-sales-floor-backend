@@ -5,6 +5,7 @@ const express = require('express');
 const { body, validationResult } = require('express-validator');
 const Message = require('../models/delivery/Message');
 const Client = require('../models/delivery/Client');
+const Lead = require('../models/lead/Lead');
 const Conversation = require('../models/lead/Conversation');
 const AuditEvent = require('../models/delivery/AuditEvent');
 const { authenticate } = require('../middleware/auth');
@@ -15,13 +16,26 @@ router.use(authenticate);
 
 router.get('/', async (req, res, next) => {
   try {
-    const { client_id, phone, limit = 50 } = req.query;
+    const { client_id, phone, page = 1, limit = 50 } = req.query;
     const filter = {};
     if (client_id) filter.client_id = client_id;
     if (phone) filter.phone = phone;
 
-    const messages = await Message.find(filter).sort('-sent_at').limit(Number(limit)).lean();
-    return res.json({ success: true, data: messages });
+    const skip = (Number(page) - 1) * Number(limit);
+    const [messages, total] = await Promise.all([
+      Message.find(filter).sort('-sent_at').skip(skip).limit(Number(limit)).lean(),
+      Message.countDocuments(filter),
+    ]);
+    return res.json({
+      success: true,
+      data: messages,
+      pagination: {
+        total,
+        page: Number(page),
+        limit: Number(limit),
+        pages: Math.ceil(total / Number(limit)),
+      },
+    });
   } catch (err) {
     next(err);
   }
@@ -42,6 +56,25 @@ router.post(
 
       const { phone, body: msgBody, client_id, client_name, template_id, sender } = req.body;
       const normalizedPhone = mobileMessageService.normalizeAustralianPhone(phone);
+
+      // Check opt-out suppression across Delivery Centre and Lead Centre (§5.7, AC-8)
+      const last8 = normalizedPhone.slice(-8);
+      const isOptedOutClient = await Client.findOne({
+        phone: { $regex: last8, $options: 'i' },
+        $or: [{ opted_out: true }, { consent_sms: false }],
+      });
+      const isOptedOutLead = await Lead.findOne({
+        phone: { $regex: last8, $options: 'i' },
+        $or: [{ status: 'opted out' }, { tag: 'Opted Out' }, { do_not_contact: true }],
+      });
+
+      if (isOptedOutClient || isOptedOutLead) {
+        return res.status(403).json({
+          success: false,
+          message: 'ACMA Compliance: Recipient has opted out from SMS communications. Message dispatch suppressed.',
+          opted_out: true,
+        });
+      }
 
       // Call MobileMessage service (live or simulated based on credentials/simulationMode)
       const sendResult = await mobileMessageService.sendSms({

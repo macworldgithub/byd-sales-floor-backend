@@ -1,9 +1,9 @@
 /**
  * server.js – Main Express Application Entry Point
  */
-// const dns = require('dns')
-// dns.setDefaultResultOrder('ipv4first');
-// dns.setServers(['8.8.8.8', '8.8.4.4']);
+const dns = require('dns')
+dns.setDefaultResultOrder('ipv4first');
+dns.setServers(['8.8.8.8', '8.8.4.4']);
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -64,6 +64,7 @@ app.use('/api/messages', require('./routes/messages'));
 app.use('/api/stats', require('./routes/stats'));
 app.use('/api/search', require('./routes/search'));
 app.use('/api/webhooks', require('./routes/webhooks'));
+app.use('/api/crm', require('./routes/crm'));
 
 // ─── Error Handling ─────────────────────────────────────────────────────────
 app.use((req, res, next) => {

@@ -156,6 +156,8 @@ const clientSchema = new mongoose.Schema(
     // ── Import metadata ───────────────────────────────────────────────
     imported_from: { type: String, default: null },
     imported_at: { type: Date, default: null },
+    crm_customer_id: { type: String, default: null },
+    crm_opportunity_id: { type: String, default: null },
   },
   { timestamps: true }
 );
