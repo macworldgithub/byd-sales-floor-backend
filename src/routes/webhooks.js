@@ -153,30 +153,68 @@ router.post('/mobilemessage/status', async (req, res, next) => {
   }
 });
 
-// ─── 3. Lead Centre Webhook (§7.3 & §7.4) ───────────────────────────────────
+// ─── 3. Lead Centre Webhook (§7.3 & §7.4, AC-11 Zero Demo Bleed) ──────────────
 router.post('/lead-centre', async (req, res, next) => {
   try {
-    const { event_id, event, source, customer_keys = {}, payload = {} } = req.body;
+    const { event_id, event, source, customer_keys = {}, payload = {}, isDemonstration, demo_mode } = req.body;
     const crmService = require('../services/crmService');
+
+    // AC-11 Zero Demo Bleed: Quarantine demo-mode records from production CRM
+    if (isDemonstration || demo_mode || source === 'demo_suite') {
+      return res.status(200).json({
+        success: true,
+        quarantined: true,
+        event_id,
+        message: 'Lead Centre demo record quarantined from production CRM (§5.10, AC-11)',
+      });
+    }
 
     if (event === 'lead.allocated') {
       // Inbound allocation from Lead Centre
-      const customer = await crmService.getCustomers({ q: customer_keys.phone || payload.phone });
-      let targetCust = customer[0];
-      if (!targetCust && payload.name && (payload.phone || customer_keys.phone)) {
+      const searchPhone = customer_keys.phone || payload.phone;
+      const custResult = await crmService.getCustomers({ q: searchPhone });
+      const customersList = custResult.data || [];
+      let targetCust = customersList[0];
+
+      if (!targetCust && payload.name && searchPhone) {
         targetCust = await crmService.createCustomer({
           name: payload.name,
-          phone: customer_keys.phone || payload.phone,
-          email: customer_keys.email || payload.email,
+          phone: searchPhone,
+          email: customer_keys.email || payload.email || '',
           site: payload.site || 'Fairfield',
-          source: 'Autogate',
-          lead_prospect_id: payload.prospect_id,
+          source: payload.source || 'Autogate',
+          lead_prospect_id: payload.prospect_id || payload.lead_id,
+          notes: payload.notes || `Allocated from Lead Centre (${payload.vehicle || 'BYD Range'})`,
         }).catch(() => null);
       }
-    } else if (event === 'lead.status_changed' && payload.status === 'opted out') {
-      const customers = await crmService.getCustomers({ q: customer_keys.phone });
-      if (customers[0]) {
-        await crmService.updateCustomer(customers[0].customer_id, { do_not_contact: true });
+
+      // Also create Allocation item in CRM inbox if assigned
+      if (targetCust) {
+        const { deliveryConn } = require('../db');
+        const allocColl = deliveryConn.db.collection('allocations');
+        await allocColl.insertOne({
+          allocation_id: `ALC-${Date.now().toString().slice(-4)}`,
+          customer_id: targetCust.customer_id,
+          customer_name: targetCust.name,
+          phone: targetCust.phone,
+          email: targetCust.email || '',
+          vehicle: payload.vehicle || 'BYD SEALION 7',
+          source: payload.source || 'Autogate',
+          site: targetCust.site || 'Fairfield',
+          score: payload.score || 85,
+          assigned_to: payload.assigned_to || payload.consultant || 'Alex Rivers',
+          allocated_at: new Date(),
+          status: 'pending',
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+      }
+    } else if (event === 'lead.status_changed' && (payload.status === 'opted out' || payload.do_not_contact)) {
+      const searchPhone = customer_keys.phone || payload.phone;
+      const custResult = await crmService.getCustomers({ q: searchPhone });
+      const customersList = custResult.data || [];
+      if (customersList[0]) {
+        await crmService.updateCustomer(customersList[0].customer_id, { do_not_contact: true, consent_sms: false });
       }
     }
 
@@ -186,17 +224,37 @@ router.post('/lead-centre', async (req, res, next) => {
   }
 });
 
-// ─── 4. Virtual Yard Webhook (§7.3 & §7.4) ──────────────────────────────────
+// ─── 4. Virtual Yard Webhook (§7.3 & §7.4, AC-8) ─────────────────────────────
 router.post('/virtual-yard', async (req, res, next) => {
   try {
     const { event_id, event, payload = {} } = req.body;
+    const crmService = require('../services/crmService');
+    const { deliveryConn } = require('../db');
+
+    if (event === 'vy.stock_changed' && payload.stock_id) {
+      // If stock was sold elsewhere, mark or warn matching open opportunities
+      if (payload.status === 'Sold' || payload.status === 'withdrawn') {
+        const oppColl = deliveryConn.db.collection('opportunities');
+        await oppColl.updateMany(
+          { vy_stock_id: payload.stock_id, stage: { $nin: ['Written / Sold', 'Delivered / Won'] } },
+          { $set: { vy_stock_status: payload.status, next_action_desc: `VY Stock ${payload.status} warning - verify vehicle allocation`, updatedAt: new Date() } }
+        );
+      }
+    } else if (event === 'vy.order_changed' && payload.vy_order_id) {
+      const oppColl = deliveryConn.db.collection('opportunities');
+      await oppColl.updateMany(
+        { vy_order_id: payload.vy_order_id },
+        { $set: { vy_order_status: payload.status, updatedAt: new Date() } }
+      );
+    }
+
     return res.status(200).json({ success: true, event_id, message: 'Virtual Yard webhook processed' });
   } catch (err) {
     next(err);
   }
 });
 
-// ─── 5. Sales Log Reconcile Webhook (§7.3 & §7.4) ───────────────────────────
+// ─── 5. Sales Log Reconcile Webhook (§7.3 & §7.4) ────────────────────────────
 router.post('/sales-log', async (req, res, next) => {
   try {
     const { event_id, payload = {} } = req.body;
@@ -210,19 +268,59 @@ router.post('/sales-log', async (req, res, next) => {
   }
 });
 
-// ─── 6. Delivery Centre Webhook (§7.3 & §7.4, AC-3, AC-9) ───────────────────
+// ─── 6. Delivery Centre Webhook (§7.3 & §7.4, AC-3, AC-9) ────────────────────
 router.post('/delivery', async (req, res, next) => {
   try {
     const { event_id, event, client_id, payload = {} } = req.body;
     const crmService = require('../services/crmService');
+    const { deliveryConn } = require('../db');
 
     // If Delivery comment added or stage changed, project onto matching CRM opportunity
     if (event === 'delivery.stage_changed' && payload.new_stage) {
-      const opps = await crmService.getOpportunities();
+      const oppResult = await crmService.getOpportunities({ limit: 1000 });
+      const opps = oppResult.data || [];
       const matchingOpp = opps.find((o) => o.delivery_client_id === client_id);
       if (matchingOpp) {
         await crmService.updateOpportunity(matchingOpp.opportunity_id, {
           delivery_stage: payload.new_stage,
+        });
+
+        // Broadcast timeline event into unified stream
+        const tlColl = deliveryConn.db.collection('timelineevents');
+        await tlColl.insertOne({
+          event_id: `EVT-${Date.now().toString().slice(-4)}`,
+          customer_id: matchingOpp.customer_id,
+          opportunity_id: matchingOpp.opportunity_id,
+          type: 'delivery_stage_change',
+          title: `Delivery Stage Updated: ${payload.new_stage}`,
+          content: `Vehicle handover stage transitioned to ${payload.new_stage} in Delivery Centre.`,
+          author: 'Delivery Centre Handover Specialist',
+          source: 'Delivery Centre',
+          occurred_at: new Date(),
+          visibility: 'internal',
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+      }
+    } else if (event === 'delivery.comment_added' && payload.comment) {
+      const oppResult = await crmService.getOpportunities({ limit: 1000 });
+      const opps = oppResult.data || [];
+      const matchingOpp = opps.find((o) => o.delivery_client_id === client_id);
+      if (matchingOpp) {
+        const tlColl = deliveryConn.db.collection('timelineevents');
+        await tlColl.insertOne({
+          event_id: `EVT-${Date.now().toString().slice(-4)}`,
+          customer_id: matchingOpp.customer_id,
+          opportunity_id: matchingOpp.opportunity_id,
+          type: 'note',
+          title: 'Delivery Handover Note',
+          content: payload.comment,
+          author: payload.author || 'Delivery Centre',
+          source: 'Delivery Centre',
+          occurred_at: new Date(),
+          visibility: 'internal',
+          createdAt: new Date(),
+          updatedAt: new Date(),
         });
       }
     }

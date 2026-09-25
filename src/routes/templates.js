@@ -126,4 +126,14 @@ router.patch('/:id', requireRole('manager', 'admin', 'super_admin'), async (req,
   }
 });
 
+router.delete('/:id', requireRole('manager', 'admin', 'super_admin'), async (req, res, next) => {
+  try {
+    const template = await Template.findByIdAndUpdate(req.params.id, { $set: { active: false } }, { new: true });
+    if (!template) return res.status(404).json({ success: false, message: 'Template not found.' });
+    return res.json({ success: true, message: 'Template archived.', data: template });
+  } catch (err) {
+    next(err);
+  }
+});
+
 module.exports = router;

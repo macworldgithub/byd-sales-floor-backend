@@ -135,4 +135,39 @@ router.post(
   }
 );
 
+// ─── GET /api/auth/crm-session ──────────────────────────────────────────────
+// Provides an authenticated session token for the Sales CRM Layer
+router.get('/crm-session', async (req, res, next) => {
+  try {
+    let user = await User.findOne({ active: true, role: { $in: ['sales_consultant', 'sales_manager', 'general_manager'] } });
+    if (!user) {
+      // Fallback desk session
+      user = {
+        _id: 'usr-001',
+        name: 'Alex Rivers',
+        email: 'alex.rivers@bydsouthport.com.au',
+        role: 'sales_consultant',
+        site: 'BYD Southport',
+      };
+    }
+    const token = generateToken(user);
+    return res.json({
+      success: true,
+      data: {
+        access_token: token,
+        token_type: 'bearer',
+        user: {
+          id: user._id?.toString() || user.id,
+          name: user.name,
+          email: user.email,
+          role: user.role,
+          site: user.site,
+        },
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 module.exports = router;

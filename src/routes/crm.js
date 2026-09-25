@@ -298,32 +298,51 @@ router.get('/delivery-watch', async (req, res, next) => {
   }
 });
 
-// ─── 8. Scoreboard Metrics (§5.5, AC-6) ─────────────────────────────────────
-router.get('/boards/me', (req, res) => {
-  res.json({
-    success: true,
-    data: {
-      writtenUnitsMtd: 14,
-      targetUnits: 18,
-      writtenGrossMtd: 68400,
-      openDealsCount: 22,
-      conversionRatePct: 38.2,
-      avgFirstTouchMinutes: 9.4,
-    },
-  });
+// ─── 8. Scoreboard Metrics & Targets (§5.5, AC-6) ───────────────────────────
+router.get('/boards/me', async (req, res, next) => {
+  try {
+    const data = await crmService.getBoardMe(req.query);
+    res.json({ success: true, data });
+  } catch (err) {
+    next(err);
+  }
 });
 
-router.get('/boards/team', (req, res) => {
-  res.json({
-    success: true,
-    data: {
-      totalUnits: 61,
-      targetUnits: 72,
-      pacePct: 85,
-      totalGross: 285600,
-      networkConversion: 38.4,
-    },
-  });
+router.get('/boards/team', async (req, res, next) => {
+  try {
+    const data = await crmService.getBoardTeam(req.query);
+    res.json({ success: true, data });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/targets', async (req, res, next) => {
+  try {
+    const targets = await crmService.getTargets(req.query);
+    res.json({ success: true, data: targets });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/targets', async (req, res, next) => {
+  try {
+    const updated = await crmService.updateTarget(req.body);
+    res.json({ success: true, message: 'Target quota saved to database', data: updated });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── 9. Phone Call Outreach Logging (§5.9) ──────────────────────────────────
+router.post('/customers/:id/calls', async (req, res, next) => {
+  try {
+    const callLog = await crmService.logPhoneCall(req.params.id, req.body);
+    res.status(201).json({ success: true, message: 'Phone call logged to timeline', data: callLog });
+  } catch (err) {
+    next(err);
+  }
 });
 
 module.exports = router;

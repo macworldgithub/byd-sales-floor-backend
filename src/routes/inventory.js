@@ -61,12 +61,51 @@ router.get('/', async (req, res, next) => {
   }
 });
 
-// ─── GET /api/inventory/:id ─────────────────────────────────────────────────
-router.get('/:id', async (req, res, next) => {
+// ─── POST /api/inventory/:id/soft-hold (§5.6, §6.1 Soft Hold) ───────────────
+router.post('/:id/soft-hold', async (req, res, next) => {
   try {
-    const item = await Inventory.findById(req.params.id).lean();
-    if (!item) return res.status(404).json({ success: false, message: 'Inventory item not found.' });
-    return res.json({ success: true, data: item });
+    const { customerName, durationHours = 48, notes } = req.body;
+    const expiresAt = new Date(Date.now() + Number(durationHours) * 3600000);
+
+    const item = await Inventory.findByIdAndUpdate(
+      req.params.id,
+      {
+        $set: {
+          status: 'Held',
+          'holdDetails.heldBy': req.user.name || req.user.email,
+          'holdDetails.customerName': customerName || 'Valued Prospect',
+          'holdDetails.expiresAt': expiresAt,
+          'holdDetails.notes': notes || 'Soft hold placed from Sales Floor',
+        },
+      },
+      { new: true }
+    );
+    if (!item) return res.status(404).json({ success: false, message: 'Vehicle not found.' });
+
+    return res.json({
+      success: true,
+      message: `Soft hold placed for ${customerName || 'customer'} (expires in ${durationHours}h)`,
+      data: item,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── POST /api/inventory/:id/release-hold ───────────────────────────────────
+router.post('/:id/release-hold', async (req, res, next) => {
+  try {
+    const item = await Inventory.findByIdAndUpdate(
+      req.params.id,
+      {
+        $set: { status: 'Available' },
+        $unset: { holdDetails: 1 },
+      },
+      { new: true }
+    );
+    if (!item) return res.status(404).json({ success: false, message: 'Vehicle not found.' });
+
+    return res.json({ success: true, message: 'Soft hold released. Vehicle back in available stock.', data: item });
   } catch (err) {
     next(err);
   }
