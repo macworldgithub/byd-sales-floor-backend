@@ -277,6 +277,55 @@ const crmService = {
     return target;
   },
 
+  async unlinkCustomer(customerId, linkType = 'all') {
+    await ensureDbConnected();
+    const custColl = deliveryConn.db.collection('customers');
+    const oppColl = deliveryConn.db.collection('opportunities');
+    const tlColl = deliveryConn.db.collection('timelineevents');
+
+    const customer = await custColl.findOne({ customer_id: customerId });
+    if (!customer) throw new Error('Customer not found');
+
+    const updates = { updatedAt: new Date() };
+    if (linkType === 'all' || linkType === 'delivery') {
+      updates.delivery_client_id = null;
+      await oppColl.updateMany(
+        { customer_id: customerId },
+        { $set: { delivery_client_id: null, delivery_stage: null, updatedAt: new Date() } }
+      );
+    }
+    if (linkType === 'all' || linkType === 'lead') {
+      updates.lead_prospect_id = null;
+    }
+    if (linkType === 'merged') {
+      updates.is_merged = false;
+      updates.merged_into = null;
+    }
+
+    await custColl.updateOne({ customer_id: customerId }, { $set: updates });
+
+    await tlColl.insertOne({
+      event_id: 'EVT-' + Math.random().toString(36).substring(2, 9).toUpperCase(),
+      customer_id: customerId,
+      event_type: 'system',
+      type: 'system',
+      title: 'Customer Link Uncoupled',
+      body: `Decoupled external system mapping (${linkType}) from record ${customerId}.`,
+      content: `Decoupled external system mapping (${linkType}) from record ${customerId}.`,
+      author_name: 'CRM Identity Engine',
+      author: 'CRM Identity Engine',
+      source_system: 'crm',
+      source: 'Sales CRM',
+      timestamp: new Date(),
+      occurred_at: new Date(),
+      visibility: 'internal',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    return this.getCustomerById(customerId);
+  },
+
   // ─── 2. Unified Timeline & Note Fanout (AC-2, AC-3) ────────────────────────
   async getTimeline(customerId, filter = {}) {
     await ensureDbConnected();

@@ -178,4 +178,86 @@ router.post('/:id/stop', async (req, res, next) => {
   }
 });
 
+// ─── POST /api/sequences/process-steps (§5.8 Background Automated Step Runner) ───
+router.post('/process-steps', async (req, res, next) => {
+  try {
+    const enrollColl = deliveryConn.db.collection('sequence_enrollments');
+    const activeEnrollments = await enrollColl.find({ status: 'active' }).toArray();
+    const mobileMessageService = require('../services/mobileMessage');
+    const Message = require('../models/delivery/Message');
+
+    const processed = [];
+
+    for (const enr of activeEnrollments) {
+      const seqDef = DEFAULT_SEQUENCES.find((s) => s.sequence_id === enr.sequence_id);
+      if (!seqDef) continue;
+
+      const nextStepIndex = enr.current_step; // 1-based
+      const stepDef = seqDef.steps[nextStepIndex];
+
+      if (!stepDef) {
+        // All steps completed
+        await enrollColl.updateOne({ _id: enr._id }, { $set: { status: 'completed', updatedAt: new Date() } });
+        processed.push({ enrollment_id: enr.enrollment_id, status: 'completed' });
+        continue;
+      }
+
+      // Check elapsed time since enrollment or last step
+      const elapsedHours = (Date.now() - new Date(enr.last_step_at || enr.enrolled_at).getTime()) / 3600000;
+      if (elapsedHours >= (stepDef.delay_hours || 0)) {
+        if (enr.phone) {
+          const normPhone = mobileMessageService.normalizeAustralianPhone(enr.phone);
+          const body = `Hi ${enr.customer_name?.split(' ')[0] || 'there'}, following up from BYD Harmony. ${stepDef.desc}. Reply STOP to opt out.`;
+          
+          try {
+            const sendRes = await mobileMessageService.sendSms({
+              to: normPhone,
+              message: body,
+            });
+
+            await Message.create({
+              client_name: enr.customer_name,
+              phone: normPhone,
+              body,
+              direction: 'outbound',
+              status: 'sent',
+              provider: 'mobilemessage',
+              provider_message_id: sendRes.messageId || null,
+              sent_by_name: 'OmniSuiteAI Sequence Engine',
+              sent_at: new Date(),
+            });
+
+            await enrollColl.updateOne(
+              { _id: enr._id },
+              {
+                $set: {
+                  current_step: nextStepIndex + 1,
+                  last_step_at: new Date(),
+                  updatedAt: new Date(),
+                },
+              }
+            );
+
+            processed.push({
+              enrollment_id: enr.enrollment_id,
+              step: nextStepIndex + 1,
+              action: 'dispatched_sms',
+            });
+          } catch (sendErr) {
+            processed.push({ enrollment_id: enr.enrollment_id, error: sendErr.message });
+          }
+        }
+      }
+    }
+
+    return res.json({
+      success: true,
+      message: `Processed ${processed.length} cadence steps.`,
+      data: processed,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 module.exports = router;

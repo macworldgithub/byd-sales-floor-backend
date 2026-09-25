@@ -169,4 +169,91 @@ router.post(
   }
 );
 
+// ─── POST /api/messages/bulk-send (§3.2 Bulk SMS Engine with Opt-out Suppression) ───
+router.post('/bulk-send', async (req, res, next) => {
+  try {
+    const { recipients = [], template_id } = req.body;
+    if (!Array.isArray(recipients) || recipients.length === 0) {
+      return res.status(400).json({ success: false, message: 'Recipients array is required' });
+    }
+
+    const results = {
+      total: recipients.length,
+      sent: 0,
+      suppressed: 0,
+      failed: 0,
+      details: [],
+    };
+
+    for (const item of recipients) {
+      const rawPhone = item.phone || item.mobile;
+      const msgBody = item.body || item.message;
+      if (!rawPhone || !msgBody) {
+        results.failed++;
+        results.details.push({ phone: rawPhone, status: 'failed', reason: 'Missing phone or body' });
+        continue;
+      }
+
+      const normalizedPhone = mobileMessageService.normalizeAustralianPhone(rawPhone);
+      const last8 = normalizedPhone.slice(-8);
+
+      // ACMA Opt-out Check
+      const [isOptedOutClient, isOptedOutLead] = await Promise.all([
+        Client.findOne({
+          phone: { $regex: last8, $options: 'i' },
+          $or: [{ opted_out: true }, { consent_sms: false }],
+        }),
+        Lead.findOne({
+          phone: { $regex: last8, $options: 'i' },
+          $or: [{ status: 'opted out' }, { tag: 'Opted Out' }, { do_not_contact: true }],
+        }),
+      ]);
+
+      if (isOptedOutClient || isOptedOutLead) {
+        results.suppressed++;
+        results.details.push({ phone: normalizedPhone, status: 'suppressed', reason: 'ACMA Opted Out' });
+        continue;
+      }
+
+      try {
+        const sendResult = await mobileMessageService.sendSms({
+          to: normalizedPhone,
+          message: msgBody,
+          sender: item.sender,
+          customRef: item.client_id ? String(item.client_id) : undefined,
+        });
+
+        await Message.create({
+          client_id: item.client_id || null,
+          client_name: item.name || item.client_name || `Customer (${normalizedPhone})`,
+          phone: normalizedPhone,
+          body: msgBody,
+          direction: 'outbound',
+          status: 'sent',
+          provider: 'mobilemessage',
+          provider_message_id: sendResult.messageId || null,
+          sent_by_id: req.user.id,
+          sent_by_name: req.user.name || req.user.email,
+          template_id,
+          sent_at: new Date(),
+        });
+
+        results.sent++;
+        results.details.push({ phone: normalizedPhone, status: 'sent', messageId: sendResult.messageId });
+      } catch (err) {
+        results.failed++;
+        results.details.push({ phone: normalizedPhone, status: 'failed', reason: err.message });
+      }
+    }
+
+    return res.json({
+      success: true,
+      message: `Bulk SMS complete: ${results.sent} sent, ${results.suppressed} suppressed (ACMA opt-out), ${results.failed} failed.`,
+      data: results,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 module.exports = router;

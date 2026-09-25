@@ -80,6 +80,16 @@ router.post('/customers/:id/merge', async (req, res, next) => {
   }
 });
 
+router.post('/customers/:id/unlink', async (req, res, next) => {
+  try {
+    const { linkType = 'all' } = req.body;
+    const customer = await crmService.unlinkCustomer(req.params.id, linkType);
+    res.json({ success: true, message: 'Customer link uncoupled successfully', data: customer });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // ─── 2. Unified Timeline & Note Fanout (§5.2, AC-2, AC-3) ───────────────────
 router.get('/customers/:id/timeline', async (req, res, next) => {
   try {
