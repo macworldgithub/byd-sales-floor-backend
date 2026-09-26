@@ -56,6 +56,7 @@ const generateToken = (user) =>
       email: user.email,
       role: user.role,
       site: user.site || '',
+      network_lookup: Boolean(user.network_lookup),
     },
     JWT_SECRET,
     { expiresIn: process.env.JWT_EXPIRES_IN || '12h' }

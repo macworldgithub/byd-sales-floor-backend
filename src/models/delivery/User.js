@@ -12,11 +12,25 @@ const userSchema = new mongoose.Schema(
     name: { type: String, required: true },
     role: {
       type: String,
-      enum: ['super_admin', 'admin', 'manager', 'agent', 'consultant'],
+      enum: [
+        'super_admin',
+        'admin',
+        'site_admin',
+        'manager',
+        'sales_manager',
+        'general_manager',
+        'agent',
+        'consultant',
+        'sales_consultant',
+        'bdc',
+        'delivery',
+      ],
       default: 'consultant',
     },
     // Site / dealership affiliation
     site: { type: String, default: '' },
+    // Cross-site lookup privilege for managers/site admins (§4)
+    network_lookup: { type: Boolean, default: false },
     active: { type: Boolean, default: true },
     password_hash: { type: String, required: true, select: false },
     must_change_password: { type: Boolean, default: false },

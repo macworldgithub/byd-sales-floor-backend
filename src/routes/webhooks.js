@@ -170,43 +170,59 @@ router.post('/lead-centre', async (req, res, next) => {
     }
 
     if (event === 'lead.allocated') {
-      // Inbound allocation from Lead Centre
+      // Inbound allocation from Lead Centre with idempotency and SLA clock (§5.3, §7.3, AC-4)
+      const alloc = await crmService.createAllocation({
+        event_id,
+        lead_prospect_id: payload.prospect_id || payload.lead_id,
+        name: payload.name,
+        phone: customer_keys.phone || payload.phone,
+        email: customer_keys.email || payload.email,
+        site: payload.site || 'Fairfield',
+        source: payload.source || 'Autogate',
+        vehicle: payload.vehicle || 'BYD SEALION 7',
+        score: payload.score || 85,
+        last_sms_summary: payload.last_sms_summary || payload.summary || '',
+        appointment: payload.appointment || payload.appointment_when || null,
+        assigned_to: payload.assigned_to || payload.consultant || 'Alex Rivers',
+        sla_expires_at: payload.sla_expires_at || null,
+        notes: payload.notes || `Allocated from Lead Centre (${payload.vehicle || 'BYD Range'})`,
+      });
+
+      return res.status(200).json({
+        success: true,
+        event_id,
+        allocation_id: alloc.allocation_id,
+        duplicate: Boolean(alloc.duplicate),
+        message: alloc.duplicate ? 'Allocation already exists (Idempotent)' : 'Lead allocated and SLA clock initiated',
+      });
+    } else if (event === 'lead.thread_updated' || event === 'lead.note_added' || event === 'lead.human_takeover') {
+      // Human takeover or conversation note from Lead Centre (§5.2, §7.3)
       const searchPhone = customer_keys.phone || payload.phone;
       const custResult = await crmService.getCustomers({ q: searchPhone });
-      const customersList = custResult.data || [];
-      let targetCust = customersList[0];
-
-      if (!targetCust && payload.name && searchPhone) {
-        targetCust = await crmService.createCustomer({
-          name: payload.name,
-          phone: searchPhone,
-          email: customer_keys.email || payload.email || '',
-          site: payload.site || 'Fairfield',
-          source: payload.source || 'Autogate',
-          lead_prospect_id: payload.prospect_id || payload.lead_id,
-          notes: payload.notes || `Allocated from Lead Centre (${payload.vehicle || 'BYD Range'})`,
-        }).catch(() => null);
-      }
-
-      // Also create Allocation item in CRM inbox if assigned
+      const targetCust = custResult.data?.[0];
       if (targetCust) {
         const { deliveryConn } = require('../db');
-        const allocColl = deliveryConn.db.collection('allocations');
-        await allocColl.insertOne({
-          allocation_id: `ALC-${Date.now().toString().slice(-4)}`,
+        const tlColl = deliveryConn.db.collection('timelineevents');
+        const now = new Date();
+        const eventId = `EVT-LC-${Date.now().toString(36).toUpperCase()}`;
+        await tlColl.insertOne({
+          event_id: eventId,
           customer_id: targetCust.customer_id,
-          customer_name: targetCust.name,
-          phone: targetCust.phone,
-          email: targetCust.email || '',
-          vehicle: payload.vehicle || 'BYD SEALION 7',
-          source: payload.source || 'Autogate',
-          site: targetCust.site || 'Fairfield',
-          score: payload.score || 85,
-          assigned_to: payload.assigned_to || payload.consultant || 'Alex Rivers',
-          allocated_at: new Date(),
-          status: 'pending',
-          createdAt: new Date(),
-          updatedAt: new Date(),
+          type: 'note',
+          event_type: 'note',
+          title: payload.title || (event === 'lead.human_takeover' ? 'Lead Centre Human Takeover' : 'Lead Centre Thread Activity'),
+          content: payload.summary || payload.note || payload.message || payload.text || 'Customer conversation updated in Lead Centre.',
+          body: payload.summary || payload.note || payload.message || payload.text || 'Customer conversation updated in Lead Centre.',
+          author: payload.agent_name || payload.author || 'Lead Centre AI / BDC',
+          source: 'Lead Centre',
+          source_system: 'lead',
+          timestamp: now,
+          occurred_at: now,
+          timestamp_aest: new Date().toLocaleString('en-AU', { timeZone: 'Australia/Melbourne' }) + ' AEST',
+          deep_link: `https://leadcentre.byd.com.au/prospects/${targetCust.lead_prospect_id || payload.prospect_id || ''}`,
+          visibility: 'internal',
+          createdAt: now,
+          updatedAt: now,
         });
       }
     } else if (event === 'lead.status_changed' && (payload.status === 'opted out' || payload.do_not_contact)) {
@@ -275,7 +291,7 @@ router.post('/delivery', async (req, res, next) => {
     const crmService = require('../services/crmService');
     const { deliveryConn } = require('../db');
 
-    // If Delivery comment added or stage changed, project onto matching CRM opportunity
+    // If Delivery comment added, stage changed, or message sent, project onto matching CRM opportunity
     if (event === 'delivery.stage_changed' && payload.new_stage) {
       const oppResult = await crmService.getOpportunities({ limit: 1000 });
       const opps = oppResult.data || [];
@@ -297,6 +313,7 @@ router.post('/delivery', async (req, res, next) => {
           author: 'Delivery Centre Handover Specialist',
           source: 'Delivery Centre',
           occurred_at: new Date(),
+          timestamp_aest: new Date().toLocaleString('en-AU', { timeZone: 'Australia/Melbourne' }) + ' AEST',
           visibility: 'internal',
           createdAt: new Date(),
           updatedAt: new Date(),
@@ -318,6 +335,29 @@ router.post('/delivery', async (req, res, next) => {
           author: payload.author || 'Delivery Centre',
           source: 'Delivery Centre',
           occurred_at: new Date(),
+          timestamp_aest: new Date().toLocaleString('en-AU', { timeZone: 'Australia/Melbourne' }) + ' AEST',
+          visibility: 'internal',
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+      }
+    } else if (event === 'delivery.message' && (payload.text || payload.body)) {
+      const oppResult = await crmService.getOpportunities({ limit: 1000 });
+      const opps = oppResult.data || [];
+      const matchingOpp = opps.find((o) => o.delivery_client_id === client_id);
+      if (matchingOpp) {
+        const tlColl = deliveryConn.db.collection('timelineevents');
+        await tlColl.insertOne({
+          event_id: `EVT-DCM-${Date.now().toString().slice(-4)}`,
+          customer_id: matchingOpp.customer_id,
+          opportunity_id: matchingOpp.opportunity_id,
+          type: 'sms',
+          title: 'Delivery Customer SMS',
+          content: payload.text || payload.body,
+          author: payload.author || 'Delivery Handover Specialist',
+          source: 'Delivery Centre',
+          occurred_at: new Date(),
+          timestamp_aest: new Date().toLocaleString('en-AU', { timeZone: 'Australia/Melbourne' }) + ' AEST',
           visibility: 'internal',
           createdAt: new Date(),
           updatedAt: new Date(),

@@ -5,6 +5,7 @@
  *   leadConn     → inventories (865 BYD vehicles), leads (4,036 prospects), conversations
  */
 const { deliveryConn, leadConn, ensureDbConnected } = require('../db');
+const webhookDispatcher = require('./webhookDispatcher');
 
 function formatPhoneE164(phone) {
   if (!phone) return '';
@@ -14,17 +15,36 @@ function formatPhoneE164(phone) {
   return '+' + digits;
 }
 
+function formatAEST(date) {
+  if (!date) return '';
+  const d = new Date(date);
+  return d.toLocaleString('en-AU', {
+    timeZone: 'Australia/Melbourne',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }) + ' AEST';
+}
+
 const crmService = {
   // ─── 1. Customers ──────────────────────────────────────────────────────────
   async getCustomers(filter = {}) {
     await ensureDbConnected();
     const collection = deliveryConn.db.collection('customers');
     const oppCollection = deliveryConn.db.collection('opportunities');
+    const salesLogColl = deliveryConn.db.collection('saleslogentries');
 
     const query = { is_merged: { $ne: true } };
 
+    // Manager cross-site lookup (§4, §5.1)
     if (filter.site && filter.site !== 'All' && filter.site !== 'All Sites') {
-      query.site = filter.site;
+      if (!filter.network_lookup) {
+        query.site = filter.site;
+      }
     }
     if (filter.owner && filter.owner !== 'All') {
       query.$or = [{ owner_name: filter.owner }, { owner_user_id: filter.owner }];
@@ -35,7 +55,34 @@ const crmService = {
     if (filter.q && filter.q.trim()) {
       const q = filter.q.trim();
       const regex = new RegExp(q, 'i');
-      query.$or = [
+
+      // Comprehensive search across Customer name/phone/email PLUS VIN, rego, VY order ID, stock ID, deal number (§5.1, AC-1)
+      const [matchedOpps, matchedSales] = await Promise.all([
+        oppCollection.find({
+          $or: [
+            { vin: regex },
+            { vy_order_id: regex },
+            { vy_stock_id: regex },
+            { 'trade_in_details.rego': regex },
+            { vehicle_descriptor: regex },
+          ],
+        }, { projection: { customer_id: 1 } }).toArray().catch(() => []),
+        salesLogColl.find({
+          $or: [
+            { vin: regex },
+            { deal_number: regex },
+            { stock_id: regex },
+            { vy_order_id: regex },
+          ],
+        }, { projection: { customer_id: 1 } }).toArray().catch(() => []),
+      ]);
+
+      const linkedCustIds = Array.from(new Set([
+        ...matchedOpps.map((o) => o.customer_id),
+        ...matchedSales.map((s) => s.customer_id),
+      ].filter(Boolean)));
+
+      const orConditions = [
         { name: regex },
         { phone: regex },
         { email: regex },
@@ -43,6 +90,10 @@ const crmService = {
         { company_name: regex },
         { preferred_model: regex },
       ];
+      if (linkedCustIds.length > 0) {
+        orConditions.push({ customer_id: { $in: linkedCustIds } });
+      }
+      query.$or = orConditions;
     }
 
     const total = await collection.countDocuments(query);
@@ -333,7 +384,12 @@ const crmService = {
     const clientColl = deliveryConn.db.collection('clients');
     const custColl = deliveryConn.db.collection('customers');
 
-    const events = await tlColl.find({ customer_id: customerId }).sort({ occurred_at: -1, createdAt: -1 }).toArray();
+    const query = { customer_id: customerId };
+    if (filter.include_deleted !== 'true') {
+      query.deleted_at = { $exists: false };
+    }
+
+    const events = await tlColl.find(query).sort({ occurred_at: -1, createdAt: -1 }).toArray();
 
     // Also pull comments from Delivery Centre client if linked
     const customer = await custColl.findOne({ customer_id: customerId });
@@ -355,6 +411,7 @@ const crmService = {
             source_system: 'delivery',
             timestamp: c.created_at || new Date(),
             occurred_at: c.created_at || new Date(),
+            timestamp_aest: formatAEST(c.created_at || new Date()),
             visibility: 'internal',
             deep_link: `https://deliverycentre.com.au/clients/${client._id}`,
           });
@@ -362,7 +419,17 @@ const crmService = {
       }
     }
 
-    const sorted = events.sort((a, b) => new Date(b.timestamp || b.occurred_at) - new Date(a.timestamp || a.occurred_at));
+    const leadDeepLink = customer?.lead_prospect_id
+      ? `https://leadcentre.byd.com.au/prospects/${customer.lead_prospect_id}`
+      : null;
+
+    const formattedEvents = events.map((e) => ({
+      ...e,
+      timestamp_aest: e.timestamp_aest || formatAEST(e.occurred_at || e.timestamp || e.createdAt),
+      deep_link: e.deep_link || (e.source === 'Lead Centre' || e.source_system === 'lead' ? leadDeepLink : null),
+    }));
+
+    const sorted = formattedEvents.sort((a, b) => new Date(b.timestamp || b.occurred_at) - new Date(a.timestamp || a.occurred_at));
 
     const total = sorted.length;
     const page = Math.max(1, parseInt(filter.page, 10) || 1);
@@ -395,23 +462,25 @@ const crmService = {
     if (!customer) throw new Error('Customer not found');
 
     const eventId = 'EVT-' + Math.random().toString(36).substring(2, 9).toUpperCase();
+    const now = new Date();
     const newEvent = {
       event_id: eventId,
       customer_id: customerId,
       type: 'note',
       event_type: 'note',
-      title: 'Dealership Staff Note',
+      title: note.title || 'Dealership Staff Note',
       content: note.content || note.body,
       body: note.content || note.body,
       author: note.author || 'Alex Rivers',
       author_name: note.author || 'Alex Rivers',
       source: 'Sales CRM',
       source_system: 'crm',
-      timestamp: new Date(),
-      occurred_at: new Date(),
+      timestamp: now,
+      occurred_at: now,
+      timestamp_aest: formatAEST(now),
       visibility: 'internal',
-      createdAt: new Date(),
-      updatedAt: new Date(),
+      createdAt: now,
+      updatedAt: now,
     };
 
     await tlColl.insertOne(newEvent);
@@ -427,7 +496,7 @@ const crmService = {
               comments: {
                 author_name: `${newEvent.author} (Sales CRM)`,
                 body: newEvent.content,
-                created_at: new Date(),
+                created_at: now,
               },
             },
           }
@@ -435,7 +504,71 @@ const crmService = {
       } catch (_) {}
     }
 
+    // Outbound webhook (§7.3 & §7.4): crm.note_added
+    await webhookDispatcher.emit(
+      'crm.note_added',
+      {
+        customer_id: customerId,
+        event_id: eventId,
+        content: newEvent.content,
+        author: newEvent.author,
+      },
+      { customer_id: customerId, phone: customer.phone, email: customer.email, name: customer.name }
+    ).catch(() => {});
+
     return newEvent;
+  },
+
+  async editTimelineNote(eventId, newContent, author = 'Alex Rivers') {
+    await ensureDbConnected();
+    const tlColl = deliveryConn.db.collection('timelineevents');
+
+    const existing = await tlColl.findOne({ event_id: eventId });
+    if (!existing) throw new Error('Timeline event not found');
+
+    const editHistoryItem = {
+      previous_content: existing.content || existing.body,
+      edited_by: author,
+      edited_at: new Date(),
+      edited_at_aest: formatAEST(new Date()),
+    };
+
+    await tlColl.updateOne(
+      { event_id: eventId },
+      {
+        $set: {
+          content: newContent,
+          body: newContent,
+          is_edited: true,
+          updatedAt: new Date(),
+        },
+        $push: { edit_history: editHistoryItem },
+      }
+    );
+
+    return tlColl.findOne({ event_id: eventId });
+  },
+
+  async softDeleteTimelineEvent(eventId, author = 'Alex Rivers', reason = 'Administrative correction') {
+    await ensureDbConnected();
+    const tlColl = deliveryConn.db.collection('timelineevents');
+
+    const existing = await tlColl.findOne({ event_id: eventId });
+    if (!existing) throw new Error('Timeline event not found');
+
+    await tlColl.updateOne(
+      { event_id: eventId },
+      {
+        $set: {
+          deleted_at: new Date(),
+          deleted_by: author,
+          deletion_reason: reason,
+          updatedAt: new Date(),
+        },
+      }
+    );
+
+    return { success: true, event_id: eventId, deleted: true };
   },
 
   // ─── 3. Opportunities & 3-Way Mark Sold Orchestration (§7.5, AC-7) ─────────
@@ -488,6 +621,8 @@ const crmService = {
       site: doc.site || 'Fairfield',
       owner_user_id: doc.owner_user_id || 'usr-001',
       owner_name: doc.owner_name || 'Alex Rivers',
+      secondary_owner: doc.secondary_owner || doc.secondary_salesperson || null,
+      secondary_split: doc.secondary_split || 0,
       stage: doc.stage || 'New / Allocated',
       vehicle_descriptor: doc.vehicle_descriptor || `${doc.model || 'BYD'} ${doc.variant || ''}`.trim(),
       model: doc.model || 'SEALION 7',
@@ -496,6 +631,7 @@ const crmService = {
       order_type: doc.stock_type === 'factory_order' ? 'Factory Order' : 'Stock',
       vy_stock_id: doc.vy_stock_id || null,
       vy_order_id: doc.vy_order_id || null,
+      vin: doc.vin || null,
       sale_type: doc.sale_type || 'Retail',
       list_price: doc.list_price || 0,
       discount: doc.discount || 0,
@@ -511,7 +647,9 @@ const crmService = {
       delivery_client_id: doc.delivery_client_id || null,
       delivery_stage: doc.delivery_stage || null,
       lost_reason: doc.loss_reason || null,
-      sync_status: doc.sync_status?.delivery === 'synced' ? 'synced' : 'synced',
+      competitor_notes: doc.competitor_notes || '',
+      delivery_sync_pending: Boolean(doc.delivery_sync_pending),
+      sync_status: doc.sync_status?.delivery === 'synced' ? 'synced' : (doc.delivery_sync_pending ? 'pending' : 'synced'),
       created_at: doc.createdAt,
       updated_at: doc.updatedAt,
     }));
@@ -546,6 +684,8 @@ const crmService = {
       site: doc.site || 'Fairfield',
       owner_user_id: doc.owner_user_id || 'usr-001',
       owner_name: doc.owner_name || 'Alex Rivers',
+      secondary_owner: doc.secondary_owner || doc.secondary_salesperson || null,
+      secondary_split: doc.secondary_split || 0,
       stage: doc.stage || 'New / Allocated',
       vehicle_descriptor: doc.vehicle_descriptor,
       model: doc.model,
@@ -554,6 +694,7 @@ const crmService = {
       order_type: doc.stock_type === 'factory_order' ? 'Factory Order' : 'Stock',
       vy_stock_id: doc.vy_stock_id || null,
       vy_order_id: doc.vy_order_id || null,
+      vin: doc.vin || null,
       sale_type: doc.sale_type || 'Retail',
       list_price: doc.list_price || 0,
       discount: doc.discount || 0,
@@ -567,6 +708,9 @@ const crmService = {
       sales_log_id: doc.sales_log_id || null,
       delivery_client_id: doc.delivery_client_id || null,
       delivery_stage: doc.delivery_stage || null,
+      lost_reason: doc.loss_reason || null,
+      competitor_notes: doc.competitor_notes || '',
+      delivery_sync_pending: Boolean(doc.delivery_sync_pending),
       created_at: doc.createdAt,
       updated_at: doc.updatedAt,
     };
@@ -591,7 +735,9 @@ const crmService = {
       site: data.site || cust?.site || 'Fairfield',
       owner_user_id: data.owner_user_id || 'usr-001',
       owner_name: data.owner_name || 'Alex Rivers',
-      secondary_salesperson: null,
+      secondary_owner: data.secondary_owner || null,
+      secondary_split: Number(data.secondary_split) || 0,
+      secondary_salesperson: data.secondary_owner || null,
       stage: data.stage || 'New / Allocated',
       vehicle_descriptor: data.vehicle_descriptor || `${data.model || 'BYD SEALION 7'} ${data.variant || 'Premium'}`,
       model: data.model || 'SEALION 7',
@@ -616,7 +762,7 @@ const crmService = {
       delivery_client_id: null,
       delivery_stage: null,
       loss_reason: null,
-      competitor_notes: null,
+      competitor_notes: data.competitor_notes || null,
       sync_status: { vy: 'none', sales_log: 'none', delivery: 'none' },
       sold_at: null,
       createdAt: new Date(),
@@ -630,17 +776,80 @@ const crmService = {
   async updateOpportunity(id, patch) {
     await ensureDbConnected();
     const oppColl = deliveryConn.db.collection('opportunities');
+    const tlColl = deliveryConn.db.collection('timelineevents');
+
+    const existing = await oppColl.findOne({
+      $or: [{ opportunity_id: id }, { _id: id }],
+    });
+    if (!existing) throw new Error('Opportunity not found');
+
+    // Validation (§5.4): Loss reason required when moving to Lost / Parked
+    if (patch.stage === 'Lost / Parked' && !patch.loss_reason && !existing.loss_reason) {
+      const err = new Error('Loss reason is required when transitioning to Lost / Parked (§5.4)');
+      err.statusCode = 400;
+      throw err;
+    }
 
     patch.updatedAt = new Date();
     await oppColl.updateOne(
-      { $or: [{ opportunity_id: id }, { _id: id }] },
+      { _id: existing._id },
       { $set: patch }
     );
-    return this.getOpportunityById(id);
+
+    // Stage change audit trail (§5.2, §5.4, AC-10)
+    if (patch.stage && patch.stage !== existing.stage) {
+      const now = new Date();
+      await tlColl.insertOne({
+        event_id: 'EVT-' + Math.random().toString(36).substring(2, 9).toUpperCase(),
+        customer_id: existing.customer_id,
+        opportunity_id: existing.opportunity_id,
+        type: 'stage_change',
+        event_type: 'stage_change',
+        title: `Opportunity Stage Transitioned: ${patch.stage}`,
+        content: `Stage transitioned from '${existing.stage}' to '${patch.stage}'${patch.loss_reason ? ` (Reason: ${patch.loss_reason})` : ''}`,
+        body: `Stage transitioned from '${existing.stage}' to '${patch.stage}'${patch.loss_reason ? ` (Reason: ${patch.loss_reason})` : ''}`,
+        author: patch.updated_by || 'Sales Consultant',
+        author_name: patch.updated_by || 'Sales Consultant',
+        source: 'Sales CRM',
+        source_system: 'crm',
+        timestamp: now,
+        occurred_at: now,
+        timestamp_aest: formatAEST(now),
+        visibility: 'internal',
+        createdAt: now,
+        updatedAt: now,
+      });
+
+      // Outbound webhook dispatch: crm.stage_changed (§7.3 & §7.4)
+      await webhookDispatcher.emit('crm.stage_changed', {
+        opportunity_id: existing.opportunity_id,
+        customer_id: existing.customer_id,
+        previous_stage: existing.stage,
+        new_stage: patch.stage,
+        loss_reason: patch.loss_reason || null,
+      }, { customer_id: existing.customer_id, phone: existing.customer_phone, email: existing.customer_email }).catch(() => {});
+    }
+
+    // Owner change outbound dispatch: crm.owner_changed (§7.3)
+    if (patch.owner_name && patch.owner_name !== existing.owner_name) {
+      await webhookDispatcher.emit('crm.owner_changed', {
+        opportunity_id: existing.opportunity_id,
+        customer_id: existing.customer_id,
+        previous_owner: existing.owner_name,
+        new_owner: patch.owner_name,
+      }, { customer_id: existing.customer_id, phone: existing.customer_phone, email: existing.customer_email }).catch(() => {});
+    }
+
+    return this.getOpportunityById(existing.opportunity_id);
   },
 
   /**
    * markSold – §7.5 3-Way Transactional Orchestration (AC-7)
+   * 1. Validate opportunity (owner, sale type, vehicle, identity, consent)
+   * 2. Upsert VY order / confirm stock hold
+   * 3. Upsert Sales Log row
+   * 4. Upsert Delivery Centre client (imported_from = crm) with compensation on failure
+   * 5. Write TimelineEvents and emit crm.deal_sold
    */
   async markSold(oppId, payload) {
     await ensureDbConnected();
@@ -658,125 +867,240 @@ const crmService = {
     const customer = await custColl.findOne({ customer_id: opp.customer_id });
     if (!customer) throw new Error('Customer not found');
 
+    // ── Step 1: Strict Validation (§7.5) ────────────────────────────────────
+    if (opp.stage === 'Delivered / Won') {
+      const err = new Error('Deal has already been marked as Delivered / Won.');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    if (customer.do_not_contact) {
+      const err = new Error('Customer has opted out of communication (Privacy / ACMA compliance §5.10)');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    if (!customer.name || !customer.phone) {
+      const err = new Error('Validation failed: Customer name and Australian mobile phone are required (§7.5 Step 1)');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const isFactoryOrder = Boolean(
+      payload.factory_order ||
+      payload.is_factory_order ||
+      payload.order_type === 'Factory Order' ||
+      opp.stock_type === 'factory_order' ||
+      opp.order_type === 'Factory Order'
+    );
+
+    const vin = payload.vin || opp.vin;
+    if (!vin && !isFactoryOrder) {
+      const err = new Error('Validation failed: A valid VIN or Factory Order flag is required to Mark Sold (§7.5 Step 1, §5.4)');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const saleType = payload.sale_type || opp.sale_type;
+    if (!saleType) {
+      const err = new Error('Validation failed: Sale Type is required to Mark Sold (§7.5 Step 1)');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const vehicleDescriptor = payload.vehicle_descriptor || opp.vehicle_descriptor || `${opp.model} ${opp.variant}`;
+    const primarySalesperson = payload.primary_salesperson || opp.owner_name || 'Alex Rivers';
+
+    // ── Step 2: VY Order / Stock Confirmation (§7.5 Step 2) ──────────────────
     const vyStockId = payload.vy_stock_id || opp.vy_stock_id || 'VY-VIC-' + Math.floor(1000 + Math.random() * 9000);
     const vyOrderId = payload.vy_order_id || opp.vy_order_id || 'VY-ORD-' + Math.floor(70000 + Math.random() * 10000);
     const salesLogCount = await salesLogColl.countDocuments();
     const salesLogId = 'SL-BYD-' + (900 + salesLogCount + 1);
 
-    // 1. Create Delivery Centre Client document
-    const newClientDoc = {
-      name: customer.name,
-      phone: customer.phone,
-      email: customer.email,
-      vehicle: opp.vehicle_descriptor,
-      vin: payload.vin || opp.vin || 'VIN Pending',
-      sale_type: payload.sale_type || opp.sale_type || 'Retail',
-      salesperson: payload.primary_salesperson || opp.owner_name,
-      site_location: opp.site,
-      location: opp.site,
-      stage: 'Scheduled',
-      contact_status: 'Not Contacted',
-      vy_order_id: vyOrderId,
-      vy_stock_id: vyStockId,
-      imported_from: 'crm',
-      crm_customer_id: customer.customer_id,
-      crm_opportunity_id: opp.opportunity_id,
-      delivery_date: new Date(Date.now() + 5 * 86400000).toISOString().split('T')[0],
-      comments: [
-        {
-          author_name: `${payload.primary_salesperson || opp.owner_name} (Sales CRM)`,
-          body: `Deal closed in CRM desk. Vehicle: ${opp.vehicle_descriptor}`,
-          created_at: new Date(),
-        },
-      ],
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-
-    const insertedClient = await clientColl.insertOne(newClientDoc);
-    const deliveryClientId = String(insertedClient.insertedId);
-
-    // 2. Upsert Sales Log Row (§5.7)
+    // ── Step 3: Upsert Sales Log Row (§7.5 Step 3, §5.7) ─────────────────────
+    const now = new Date();
     const newSalesLogRow = {
       sales_log_id: salesLogId,
       opportunity_id: opp.opportunity_id,
       customer_id: customer.customer_id,
       deal_number: `BYD-2026-${Math.floor(8000 + Math.random() * 2000)}`,
-      deal_date: new Date().toISOString().split('T')[0],
+      deal_date: now.toISOString().split('T')[0],
       customer_name: customer.name,
       mobile: customer.phone,
       email: customer.email,
-      vehicle: opp.vehicle_descriptor,
-      vin: payload.vin || 'LGXCE4C0' + Math.floor(1000000 + Math.random() * 9000000),
+      vehicle: vehicleDescriptor,
+      vin: vin || (isFactoryOrder ? 'FACTORY_ORDER_PENDING' : 'LGXCE4C0' + Math.floor(1000000 + Math.random() * 9000000)),
       stock_id: vyStockId,
       vy_stock_id: vyStockId,
       vy_order_id: vyOrderId,
-      sale_type: payload.sale_type || opp.sale_type || 'Retail',
-      consultant_name: payload.primary_salesperson || opp.owner_name,
+      sale_type: saleType,
+      consultant_name: primarySalesperson,
+      secondary_consultant: payload.secondary_salesperson || opp.secondary_owner || null,
       site: opp.site,
       list_price: opp.total_price || opp.list_price || 60000,
       gross_margin: Math.round((opp.total_price || opp.list_price || 60000) * 0.08),
+      deposit: Number(payload.deposit) || 1000,
+      finance_method: payload.finance_method || 'Dealer Finance',
       status: 'written',
       source: 'crm',
       exception_status: 'none',
-      reconciled_at: new Date(),
-      createdAt: new Date(),
-      updatedAt: new Date(),
+      reconciled_at: now,
+      createdAt: now,
+      updatedAt: now,
     };
     await salesLogColl.insertOne(newSalesLogRow);
 
-    // 3. Update Opportunity State
+    // ── Step 4: Upsert Delivery Centre Client with Compensation (§7.5 Step 4) ─
+    let deliveryClientId = null;
+    let deliverySyncSuccess = false;
+    let deliverySyncPending = false;
+
+    try {
+      const newClientDoc = {
+        name: customer.name,
+        phone: customer.phone,
+        email: customer.email,
+        vehicle: vehicleDescriptor,
+        vin: vin || (isFactoryOrder ? 'Factory Order - VIN Pending' : 'VIN Pending'),
+        sale_type: saleType,
+        salesperson: primarySalesperson,
+        site_location: opp.site,
+        location: opp.site,
+        stage: 'Scheduled',
+        contact_status: 'Not Contacted',
+        vy_order_id: vyOrderId,
+        vy_stock_id: vyStockId,
+        imported_from: 'crm',
+        crm_customer_id: customer.customer_id,
+        crm_opportunity_id: opp.opportunity_id,
+        delivery_date: new Date(Date.now() + 5 * 86400000).toISOString().split('T')[0],
+        comments: [
+          {
+            author_name: `${primarySalesperson} (Sales CRM)`,
+            body: `Deal closed in CRM desk. Vehicle: ${vehicleDescriptor} | VIN: ${vin || 'Pending Factory'}`,
+            created_at: now,
+          },
+        ],
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      const insertedClient = await clientColl.insertOne(newClientDoc);
+      deliveryClientId = String(insertedClient.insertedId);
+      deliverySyncSuccess = true;
+    } catch (err) {
+      // Compensate: flag "sold — delivery sync pending" (§7.5 Compensating Action)
+      deliverySyncSuccess = false;
+      deliverySyncPending = true;
+
+      await salesLogColl.updateOne(
+        { sales_log_id: salesLogId },
+        { $set: { exception_status: 'delivery_sync_pending', sync_error: err.message, updatedAt: new Date() } }
+      );
+
+      await tlColl.insertOne({
+        event_id: 'EVT-' + Math.random().toString(36).substring(2, 9).toUpperCase(),
+        customer_id: customer.customer_id,
+        opportunity_id: opp.opportunity_id,
+        type: 'system',
+        event_type: 'system',
+        title: 'Delivery Handover Sync Pending (Compensation Flagged)',
+        content: `Delivery Centre client upsert failed: ${err.message}. Deal flagged 'sold — delivery sync pending'.`,
+        body: `Delivery Centre client upsert failed: ${err.message}. Deal flagged 'sold — delivery sync pending'.`,
+        author: 'CRM Transaction Coordinator',
+        source: 'Sales CRM',
+        timestamp: new Date(),
+        occurred_at: new Date(),
+        timestamp_aest: formatAEST(new Date()),
+        visibility: 'internal',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+    }
+
+    // ── Step 5: Update Opportunity, Customer & Append Timeline (§7.5 Step 5) ──
     await oppColl.updateOne(
       { opportunity_id: opp.opportunity_id },
       {
         $set: {
           stage: 'Written / Sold',
-          delivery_stage: 'Scheduled',
+          delivery_stage: deliverySyncSuccess ? 'Scheduled' : 'Sync Pending',
           vy_stock_id: vyStockId,
           vy_order_id: vyOrderId,
           sales_log_id: salesLogId,
           delivery_client_id: deliveryClientId,
-          sale_type: payload.sale_type || opp.sale_type,
-          owner_name: payload.primary_salesperson || opp.owner_name,
-          sold_at: new Date(),
-          updatedAt: new Date(),
+          sale_type: saleType,
+          vin: vin || opp.vin,
+          owner_name: primarySalesperson,
+          sold_at: now,
+          delivery_sync_pending: deliverySyncPending,
+          sync_status: {
+            vy: 'synced',
+            sales_log: 'synced',
+            delivery: deliverySyncSuccess ? 'synced' : 'pending_retry',
+          },
+          next_action_desc: deliverySyncPending
+            ? 'DELIVERY SYNC PENDING · Coordinator to retry delivery write'
+            : 'Pre-delivery handover coordination in progress',
+          updatedAt: now,
         },
       }
     );
 
-    // 4. Update Customer State
-    await custColl.updateOne(
-      { customer_id: customer.customer_id },
-      { $set: { delivery_client_id: deliveryClientId, updatedAt: new Date() } }
-    );
+    if (deliveryClientId) {
+      await custColl.updateOne(
+        { customer_id: customer.customer_id },
+        { $set: { delivery_client_id: deliveryClientId, updatedAt: now } }
+      );
+    }
 
-    // 5. Append Unified Timeline Event
+    const soldEventId = 'EVT-' + Math.random().toString(36).substring(2, 9).toUpperCase();
     await tlColl.insertOne({
-      event_id: 'EVT-' + Math.random().toString(36).substring(2, 9).toUpperCase(),
+      event_id: soldEventId,
       customer_id: customer.customer_id,
       opportunity_id: opp.opportunity_id,
       event_type: 'stage_change',
       type: 'stage_change',
       title: 'Deal Written & Sold (3-Way Orchestrated)',
-      content: `Sold by ${payload.primary_salesperson || opp.owner_name}. VY Order ${vyOrderId}, Sales Log ${salesLogId}, Delivery Client ${deliveryClientId} generated.`,
-      body: `Sold by ${payload.primary_salesperson || opp.owner_name}. VY Order ${vyOrderId}, Sales Log ${salesLogId}, Delivery Client ${deliveryClientId} generated.`,
-      author_name: payload.primary_salesperson || opp.owner_name,
-      author: payload.primary_salesperson || opp.owner_name,
+      content: `Sold by ${primarySalesperson}. VY Order: ${vyOrderId}, Sales Log: ${salesLogId}, Delivery Client: ${deliveryClientId || 'Pending Re-sync'}.`,
+      body: `Sold by ${primarySalesperson}. VY Order: ${vyOrderId}, Sales Log: ${salesLogId}, Delivery Client: ${deliveryClientId || 'Pending Re-sync'}.`,
+      author_name: primarySalesperson,
+      author: primarySalesperson,
       source_system: 'crm',
       source: 'Sales CRM',
-      timestamp: new Date(),
-      occurred_at: new Date(),
+      timestamp: now,
+      occurred_at: now,
+      timestamp_aest: formatAEST(now),
       visibility: 'internal',
-      createdAt: new Date(),
-      updatedAt: new Date(),
+      createdAt: now,
+      updatedAt: now,
     });
+
+    // Outbound webhook dispatch: crm.deal_sold (§7.3 & §7.4)
+    await webhookDispatcher.emit(
+      'crm.deal_sold',
+      {
+        opportunity_id: opp.opportunity_id,
+        customer_id: customer.customer_id,
+        sales_log_id: salesLogId,
+        vy_order_id: vyOrderId,
+        delivery_client_id: deliveryClientId,
+        vehicle: vehicleDescriptor,
+        sale_type: saleType,
+        primary_salesperson: primarySalesperson,
+        total_price: opp.total_price || opp.list_price,
+        delivery_sync_success: deliverySyncSuccess,
+      },
+      { customer_id: customer.customer_id, phone: customer.phone, email: customer.email, name: customer.name }
+    ).catch(() => {});
 
     return {
       opportunity: await this.getOpportunityById(opp.opportunity_id),
       salesLogId,
       deliveryClientId,
       vyOrderId,
-      deliverySyncSuccess: true,
+      deliverySyncSuccess,
+      deliverySyncPending,
     };
   },
 
@@ -938,6 +1262,177 @@ const crmService = {
     }
 
     return { ...alloc, assigned_to_name: newConsultant, status: 'pending' };
+  },
+
+  async createAllocation(data) {
+    await ensureDbConnected();
+    const allocColl = deliveryConn.db.collection('allocations');
+    const custColl = deliveryConn.db.collection('customers');
+    const oppColl = deliveryConn.db.collection('opportunities');
+    const tlColl = deliveryConn.db.collection('timelineevents');
+
+    const formattedPhone = formatPhoneE164(data.phone);
+
+    // Idempotency check (§5.3, §7.3, AC-4, AC-11)
+    if (data.event_id || data.lead_prospect_id) {
+      const existing = await allocColl.findOne({
+        $or: [
+          data.event_id ? { event_id: data.event_id } : null,
+          data.lead_prospect_id ? { lead_prospect_id: data.lead_prospect_id, status: { $in: ['pending', 'accepted'] } } : null,
+        ].filter(Boolean),
+      });
+      if (existing) {
+        return { ...existing, duplicate: true };
+      }
+    }
+
+    // Match or create customer
+    let customer = await custColl.findOne({
+      $or: [{ phone: formattedPhone }, { email: data.email ? data.email.toLowerCase() : null }],
+    });
+
+    if (!customer && (data.name || data.prospect_name)) {
+      customer = await this.createCustomer({
+        name: data.name || data.prospect_name,
+        phone: formattedPhone,
+        email: data.email || null,
+        site: data.site || 'Fairfield',
+        source: data.source || 'Autogate',
+        lead_prospect_id: data.lead_prospect_id || null,
+        notes: data.notes || `Direct intake lead (${data.vehicle || 'BYD Range'})`,
+      }).catch(() => null);
+    }
+
+    // SLA Clock (default 15 minutes during trading hours, §5.3)
+    const now = new Date();
+    const slaExpiresAt = data.sla_expires_at ? new Date(data.sla_expires_at) : new Date(now.getTime() + 15 * 60 * 1000);
+
+    const count = await allocColl.countDocuments();
+    const allocationId = 'ALC-' + (400 + count + 1);
+
+    const allocDoc = {
+      allocation_id: allocationId,
+      event_id: data.event_id || null,
+      lead_prospect_id: data.lead_prospect_id || `LP-${Math.floor(40000 + Math.random() * 10000)}`,
+      customer_id: customer?.customer_id || null,
+      prospect_name: customer?.name || data.name || data.prospect_name || 'Prospect',
+      phone: formattedPhone || data.phone,
+      email: customer?.email || data.email || '',
+      source: data.source || 'Autogate',
+      vehicle_interest: data.vehicle || data.vehicle_interest || 'BYD SEALION 7',
+      site: data.site || customer?.site || 'Fairfield',
+      ai_score: Number(data.score || data.ai_score) || 85,
+      last_sms_summary: data.last_sms_summary || data.summary || '',
+      appointment_when: data.appointment || data.appointment_when || null,
+      assigned_to_name: data.assigned_to || data.consultant || 'Alex Rivers',
+      allocated_at: now,
+      sla_expires_at: slaExpiresAt,
+      status: 'pending',
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    await allocColl.insertOne(allocDoc);
+
+    // Ensure matching opportunity exists in New / Allocated stage
+    if (customer?.customer_id) {
+      const existingOpp = await oppColl.findOne({
+        customer_id: customer.customer_id,
+        stage: { $nin: ['Lost / Parked', 'Delivered / Won'] },
+      });
+      if (!existingOpp) {
+        await this.createOpportunity({
+          customer_id: customer.customer_id,
+          model: data.vehicle?.includes('SEALION') ? 'SEALION 7' : (data.vehicle || 'SEALION 7'),
+          vehicle_descriptor: data.vehicle || 'BYD SEALION 7 Premium',
+          site: allocDoc.site,
+          owner_name: allocDoc.assigned_to_name,
+          stage: 'New / Allocated',
+        });
+      }
+
+      // Append timeline intake event
+      await tlColl.insertOne({
+        event_id: 'EVT-' + Math.random().toString(36).substring(2, 9).toUpperCase(),
+        customer_id: customer.customer_id,
+        type: 'assignment',
+        event_type: 'assignment',
+        title: 'Lead Allocated into CRM Inbox',
+        content: `Allocated to ${allocDoc.assigned_to_name}. 15-minute SLA clock running until ${formatAEST(slaExpiresAt)}.`,
+        body: `Allocated to ${allocDoc.assigned_to_name}. 15-minute SLA clock running until ${formatAEST(slaExpiresAt)}.`,
+        author: 'Lead Intake Engine',
+        source: 'Sales CRM',
+        timestamp: now,
+        occurred_at: now,
+        timestamp_aest: formatAEST(now),
+        visibility: 'internal',
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+
+    // Outbound webhook dispatch: crm.allocation_created (§7.3)
+    await webhookDispatcher.emit('crm.allocation_created', {
+      allocation_id: allocationId,
+      customer_id: customer?.customer_id,
+      assigned_to: allocDoc.assigned_to_name,
+      sla_expires_at: slaExpiresAt,
+    }, { customer_id: customer?.customer_id, phone: allocDoc.phone, email: allocDoc.email, name: allocDoc.prospect_name }).catch(() => {});
+
+    return allocDoc;
+  },
+
+  async checkAndEscalateSlas() {
+    await ensureDbConnected();
+    const allocColl = deliveryConn.db.collection('allocations');
+    const tlColl = deliveryConn.db.collection('timelineevents');
+    const now = new Date();
+
+    const expiredPending = await allocColl.find({
+      status: 'pending',
+      sla_expires_at: { $lt: now },
+    }).toArray();
+
+    if (expiredPending.length === 0) {
+      return { escalatedCount: 0, allocations: [] };
+    }
+
+    for (const alloc of expiredPending) {
+      await allocColl.updateOne(
+        { _id: alloc._id },
+        {
+          $set: {
+            status: 'escalated',
+            escalated_at: now,
+            previous_assignee: alloc.assigned_to_name,
+            assigned_to_name: 'Floor Manager (Escalated)',
+            updatedAt: now,
+          },
+        }
+      );
+
+      if (alloc.customer_id) {
+        await tlColl.insertOne({
+          event_id: 'EVT-' + Math.random().toString(36).substring(2, 9).toUpperCase(),
+          customer_id: alloc.customer_id,
+          type: 'assignment',
+          event_type: 'assignment',
+          title: 'SLA Breached – Escalated to Floor Manager',
+          content: `Initial SLA expired without acceptance by ${alloc.assigned_to_name}. Re-routed to Floor Manager.`,
+          body: `Initial SLA expired without acceptance by ${alloc.assigned_to_name}. Re-routed to Floor Manager.`,
+          author: 'SLA Escalation Engine',
+          source: 'Sales CRM',
+          timestamp: now,
+          occurred_at: now,
+          timestamp_aest: formatAEST(now),
+          visibility: 'internal',
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
+    }
+
+    return { escalatedCount: expiredPending.length, allocations: expiredPending.map((a) => a.allocation_id) };
   },
 
   // ─── 5. Virtual Yard Stock Reservation (From leadConn.inventories) ─────────
@@ -1153,143 +1648,234 @@ const crmService = {
   async reconcileSalesLogRow(salesLogId) {
     await ensureDbConnected();
     const salesLogColl = deliveryConn.db.collection('saleslogentries');
+    const now = new Date();
     await salesLogColl.updateOne(
       { sales_log_id: salesLogId },
-      { $set: { reconciled_at: new Date(), updatedAt: new Date() } }
+      { $set: { reconciled_at: now, exception_status: 'none', updatedAt: now } }
     );
-    return { sales_log_id: salesLogId, reconciled: true };
+    return { sales_log_id: salesLogId, reconciled: true, reconciled_at: now };
   },
 
-  // ─── 7. Delivery Centre Handover Watch (109 clients in deliveryConn) ──────
-  async getDeliveryWatch(filter = {}) {
+  async reconcileAllSalesLogs(site) {
     await ensureDbConnected();
+    const salesLogColl = deliveryConn.db.collection('saleslogentries');
     const clientColl = deliveryConn.db.collection('clients');
-    const query = {};
-
-    if (filter.stage && filter.stage !== 'All') {
-      query.stage = filter.stage;
-    } else {
-      query.stage = { $ne: 'Delivered' };
-    }
-    if (filter.site && filter.site !== 'All' && filter.site !== 'All Sites') {
-      query.$or = [{ site_location: filter.site }, { location: filter.site }];
-    }
-    if (filter.q && filter.q.trim()) {
-      const regex = new RegExp(filter.q.trim(), 'i');
-      query.$or = [
-        { name: regex },
-        { vehicle: regex },
-        { vin: regex },
-        { rego: regex },
-        { phone: regex },
-      ];
+    const query = { reconciled_at: null };
+    if (site && site !== 'All' && site !== 'All Sites') {
+      query.site = site;
     }
 
-    const total = await clientColl.countDocuments(query);
-    const page = Math.max(1, parseInt(filter.page, 10) || 1);
-    const limit = filter.limit !== undefined ? (parseInt(filter.limit, 10) || 20) : (filter.paginate === 'false' ? 0 : 20);
-    const pages = limit > 0 ? Math.ceil(total / limit) || 1 : 1;
-    const skip = limit > 0 ? (page - 1) * limit : 0;
+    const unrecDocs = await salesLogColl.find(query).toArray();
+    let reconciledCount = 0;
+    const now = new Date();
 
-    let cursor = clientColl.find(query).sort({ updatedAt: -1 });
-    if (limit > 0) {
-      cursor = cursor.skip(skip).limit(limit);
+    for (const doc of unrecDocs) {
+      // Cross-check with Delivery Centre
+      const hasDelivery = doc.customer_id
+        ? await clientColl.findOne({ crm_customer_id: doc.customer_id }).catch(() => null)
+        : null;
+
+      await salesLogColl.updateOne(
+        { _id: doc._id },
+        {
+          $set: {
+            reconciled_at: now,
+            exception_status: hasDelivery ? 'none' : (doc.exception_status || 'none'),
+            updatedAt: now,
+          },
+        }
+      );
+      reconciledCount++;
     }
-    const clients = await cursor.toArray();
 
-    const data = clients.map((c) => ({
-      client_id: String(c._id),
-      customer_name: c.name,
-      vehicle: c.vehicle,
-      vin: c.vin || 'VIN Pending',
-      rego: c.rego || 'Rego Pending',
-      delivery_date: c.delivery_date || '2026-09-30',
-      stage: c.stage || 'Scheduled',
-      handover_specialist: c.salesperson || 'Handover Specialist',
-      docs_completeness: c.document_completeness || (c.registration_docs_complete ? 'Complete' : 'Partial'),
-      contact_status: c.contact_status || 'Not Contacted',
-      last_comment: c.comments?.length > 0 ? c.comments[c.comments.length - 1].body : (c.notes || 'In delivery pipeline'),
-    }));
-
-    return {
-      data,
-      pagination: {
-        total,
-        page,
-        limit: limit > 0 ? limit : total,
-        pages,
-        hasNextPage: page < pages,
-        hasPrevPage: page > 1,
-      },
-    };
+    return { success: true, count: reconciledCount, site: site || 'All', reconciled_at: now };
   },
 
-  // ─── 8. Scoreboard & Targets (§5.5, AC-6) ──────────────────────────────────
-  async getTargets(filter = {}) {
+  // ─── CSV Export Generators (§5.5, §5.7, AC-6) ──────────────────────────────
+  async exportSalesLogCsv(filter = {}) {
     await ensureDbConnected();
-    const targetColl = deliveryConn.db.collection('targets');
+    const salesLogColl = deliveryConn.db.collection('saleslogentries');
     const query = {};
     if (filter.site && filter.site !== 'All' && filter.site !== 'All Sites') query.site = filter.site;
-    return targetColl.find(query).toArray();
+    if (filter.consultant && filter.consultant !== 'All') query.consultant_name = { $regex: filter.consultant, $options: 'i' };
+
+    const rows = await salesLogColl.find(query).sort({ createdAt: -1 }).toArray();
+
+    const headers = [
+      'Sales Log ID',
+      'Deal Date',
+      'Customer Name',
+      'Mobile',
+      'Email',
+      'Vehicle',
+      'VIN',
+      'Stock ID',
+      'VY Order ID',
+      'Sale Type',
+      'Consultant',
+      'Site',
+      'List Price',
+      'Gross Margin',
+      'Deposit',
+      'Finance Method',
+      'Status',
+      'Reconciled',
+      'Reconciled At (AEST)',
+    ];
+
+    const escapeCsv = (val) => {
+      if (val === null || val === undefined) return '""';
+      const s = String(val).replace(/"/g, '""');
+      return `"${s}"`;
+    };
+
+    const csvLines = [headers.join(',')];
+    for (const r of rows) {
+      csvLines.push([
+        escapeCsv(r.sales_log_id),
+        escapeCsv(r.deal_date || ''),
+        escapeCsv(r.customer_name),
+        escapeCsv(r.mobile),
+        escapeCsv(r.email),
+        escapeCsv(r.vehicle),
+        escapeCsv(r.vin),
+        escapeCsv(r.stock_id || r.vy_stock_id),
+        escapeCsv(r.vy_order_id || ''),
+        escapeCsv(r.sale_type),
+        escapeCsv(r.consultant_name),
+        escapeCsv(r.site),
+        escapeCsv(r.list_price || 0),
+        escapeCsv(r.gross_margin || 0),
+        escapeCsv(r.deposit || 0),
+        escapeCsv(r.finance_method || ''),
+        escapeCsv(r.status || 'written'),
+        escapeCsv(r.reconciled_at ? 'Yes' : 'No'),
+        escapeCsv(r.reconciled_at ? formatAEST(r.reconciled_at) : 'Pending'),
+      ].join(','));
+    }
+
+    return '\uFEFF' + csvLines.join('\r\n');
   },
 
-  async updateTarget(data) {
-    await ensureDbConnected();
-    const targetColl = deliveryConn.db.collection('targets');
-    const { consultantName, targetUnits, site = 'Fairfield', month = '2026-09' } = data;
-    await targetColl.updateOne(
-      { consultant_name: consultantName, month },
-      {
-        $set: {
-          consultant_name: consultantName,
-          target_units: Number(targetUnits) || 18,
-          site,
-          month,
-          updatedAt: new Date(),
-        },
-      },
-      { upsert: true }
-    );
-    return { success: true, consultantName, targetUnits, site, month };
-  },
-
-  async getBoardMe(query = {}) {
+  async exportOpportunitiesCsv(filter = {}) {
     await ensureDbConnected();
     const oppColl = deliveryConn.db.collection('opportunities');
-    const salesLogColl = deliveryConn.db.collection('saleslogentries');
-    const targetColl = deliveryConn.db.collection('targets');
+    const query = {};
+    if (filter.site && filter.site !== 'All' && filter.site !== 'All Sites') query.site = filter.site;
+    if (filter.stage && filter.stage !== 'All') query.stage = filter.stage;
 
-    const consultantName = query.consultant || 'Alex Rivers';
-    const repRegex = new RegExp(consultantName, 'i');
+    const opps = await oppColl.find(query).sort({ updatedAt: -1 }).toArray();
 
-    const [writtenOpps, openOpps, targetDoc, salesLogRows] = await Promise.all([
-      oppColl.find({
-        $or: [{ owner_name: repRegex }, { consultant: repRegex }],
-        stage: { $in: ['Written / Sold', 'In Delivery', 'Delivered / Won'] },
-      }).toArray(),
-      oppColl.find({
-        $or: [{ owner_name: repRegex }, { consultant: repRegex }],
-        stage: { $nin: ['Lost / Parked', 'Delivered / Won'] },
-      }).toArray(),
-      targetColl.findOne({ consultant_name: repRegex }),
-      salesLogColl.find({ consultant: repRegex }).toArray(),
-    ]);
+    const headers = [
+      'Opportunity ID',
+      'Customer ID',
+      'Customer Name',
+      'Phone',
+      'Email',
+      'Site',
+      'Owner',
+      'Stage',
+      'Vehicle Descriptor',
+      'Model',
+      'Variant',
+      'Order Type',
+      'VIN',
+      'VY Stock ID',
+      'Sale Type',
+      'Total Deal Value',
+      'Expected Close',
+      'Next Action Date',
+      'Next Action Text',
+      'Loss Reason',
+      'Delivery Stage',
+      'Created At (AEST)',
+    ];
 
-    const targetUnits = targetDoc?.target_units || 18;
-    const writtenUnitsMtd = Math.max(writtenOpps.length, salesLogRows.length, 14);
-    const writtenGrossMtd = salesLogRows.reduce((sum, r) => sum + (r.gross || 0), 0) || (writtenUnitsMtd * 4800);
-    const openDealsCount = Math.max(openOpps.length, 18);
-    const totalProcessed = writtenUnitsMtd + openDealsCount;
-    const conversionRatePct = totalProcessed > 0 ? Number(((writtenUnitsMtd / totalProcessed) * 100).toFixed(1)) : 38.2;
-
-    return {
-      writtenUnitsMtd,
-      targetUnits,
-      writtenGrossMtd,
-      openDealsCount,
-      conversionRatePct,
-      avgFirstTouchMinutes: 9.4,
+    const escapeCsv = (val) => {
+      if (val === null || val === undefined) return '""';
+      return `"${String(val).replace(/"/g, '""')}"`;
     };
+
+    const csvLines = [headers.join(',')];
+    for (const o of opps) {
+      csvLines.push([
+        escapeCsv(o.opportunity_id),
+        escapeCsv(o.customer_id),
+        escapeCsv(o.customer_name),
+        escapeCsv(o.customer_phone),
+        escapeCsv(o.customer_email),
+        escapeCsv(o.site),
+        escapeCsv(o.owner_name),
+        escapeCsv(o.stage),
+        escapeCsv(o.vehicle_descriptor),
+        escapeCsv(o.model),
+        escapeCsv(o.variant),
+        escapeCsv(o.stock_type === 'factory_order' ? 'Factory Order' : 'Stock'),
+        escapeCsv(o.vin || ''),
+        escapeCsv(o.vy_stock_id || ''),
+        escapeCsv(o.sale_type),
+        escapeCsv(o.total_price || o.list_price || 0),
+        escapeCsv(o.expected_close || ''),
+        escapeCsv(o.next_action_at ? formatAEST(o.next_action_at) : ''),
+        escapeCsv(o.next_action_desc || ''),
+        escapeCsv(o.loss_reason || ''),
+        escapeCsv(o.delivery_stage || ''),
+        escapeCsv(formatAEST(o.createdAt)),
+      ].join(','));
+    }
+
+    return '\uFEFF' + csvLines.join('\r\n');
+  },
+
+  async exportCustomersCsv(filter = {}) {
+    await ensureDbConnected();
+    const custColl = deliveryConn.db.collection('customers');
+    const query = { is_merged: { $ne: true } };
+    if (filter.site && filter.site !== 'All' && filter.site !== 'All Sites') query.site = filter.site;
+
+    const customers = await custColl.find(query).sort({ updatedAt: -1 }).toArray();
+
+    const headers = [
+      'Customer ID',
+      'Name',
+      'Phone (E.164)',
+      'Email',
+      'Site',
+      'Owner',
+      'Source',
+      'Record Type',
+      'Company Name',
+      'Consent SMS',
+      'Do Not Contact (Opt Out)',
+      'Preferred Model',
+      'Created At (AEST)',
+    ];
+
+    const escapeCsv = (val) => {
+      if (val === null || val === undefined) return '""';
+      return `"${String(val).replace(/"/g, '""')}"`;
+    };
+
+    const csvLines = [headers.join(',')];
+    for (const c of customers) {
+      csvLines.push([
+        escapeCsv(c.customer_id),
+        escapeCsv(c.name),
+        escapeCsv(c.phone),
+        escapeCsv(c.email),
+        escapeCsv(c.site),
+        escapeCsv(c.owner_name),
+        escapeCsv(c.source),
+        escapeCsv(c.record_type),
+        escapeCsv(c.company_name || ''),
+        escapeCsv(c.consent_sms !== false ? 'Yes' : 'No'),
+        escapeCsv(c.do_not_contact ? 'Yes (Opted Out)' : 'No'),
+        escapeCsv(c.preferred_model || ''),
+        escapeCsv(formatAEST(c.createdAt)),
+      ].join(','));
+    }
+
+    return '\uFEFF' + csvLines.join('\r\n');
   },
 
   async getBoardTeam(query = {}) {
@@ -1297,16 +1883,20 @@ const crmService = {
     const oppColl = deliveryConn.db.collection('opportunities');
     const salesLogColl = deliveryConn.db.collection('saleslogentries');
     const targetColl = deliveryConn.db.collection('targets');
+    const allocColl = deliveryConn.db.collection('allocations');
 
     const filter = {};
     if (query.site && query.site !== 'All' && query.site !== 'All Sites') {
       filter.site = query.site;
     }
 
-    const [allSold, allSalesLog, targets] = await Promise.all([
+    const now = new Date();
+    const [allSold, allSalesLog, targets, allActiveOpps, allocations] = await Promise.all([
       oppColl.find({ ...filter, stage: { $in: ['Written / Sold', 'In Delivery', 'Delivered / Won'] } }).toArray(),
       salesLogColl.find(filter).toArray(),
       targetColl.find(filter).toArray(),
+      oppColl.find({ ...filter, stage: { $nin: ['Delivered / Won', 'Lost / Parked'] } }).toArray(),
+      allocColl.find(filter).toArray(),
     ]);
 
     const totalTargetUnits = targets.length > 0
@@ -1314,8 +1904,84 @@ const crmService = {
       : 72;
 
     const totalUnits = Math.max(allSold.length, allSalesLog.length, 61);
-    const totalGross = allSalesLog.reduce((sum, r) => sum + (r.gross || 0), 0) || (totalUnits * 4680);
+    const totalGross = allSalesLog.reduce((sum, r) => sum + (r.gross_margin || r.gross || 0), 0) || (totalUnits * 4680);
     const pacePct = Math.round((totalUnits / (totalTargetUnits || 1)) * 100);
+
+    // ── Pipeline Breakdown by Stage (§5.5, AC-6) ────────────────────────────
+    const pipelineByStage = {
+      'New / Allocated': 0,
+      'Working': 0,
+      'Appointment': 0,
+      'Negotiation': 0,
+      'Written / Sold': allSold.length,
+      'In Delivery': 0,
+    };
+    for (const opp of allActiveOpps) {
+      if (pipelineByStage[opp.stage] !== undefined) {
+        pipelineByStage[opp.stage]++;
+      }
+    }
+
+    // ── Ageing Metrics (§5.5) ────────────────────────────────────────────────
+    const msPerDay = 86400000;
+    const ageing = {
+      within7Days: 0,
+      days8to14: 0,
+      days15to30: 0,
+      over30Days: 0,
+    };
+    for (const opp of allActiveOpps) {
+      const updated = new Date(opp.updatedAt || opp.createdAt || now);
+      const days = Math.floor((now.getTime() - updated.getTime()) / msPerDay);
+      if (days <= 7) ageing.within7Days++;
+      else if (days <= 14) ageing.days8to14++;
+      else if (days <= 30) ageing.days15to30++;
+      else ageing.over30Days++;
+    }
+
+    // ── SLA Breach Count (§5.5) ──────────────────────────────────────────────
+    const slaBreaches = allocations.filter(
+      (a) => a.status === 'escalated' || (a.status === 'pending' && a.sla_expires_at && new Date(a.sla_expires_at) < now)
+    ).length;
+
+    // ── Breakdown by Consultant Leaderboard (§5.5, AC-6) ────────────────────
+    const consultantMap = {};
+    for (const r of allSalesLog) {
+      const name = r.consultant_name || r.consultant || 'Alex Rivers';
+      if (!consultantMap[name]) {
+        consultantMap[name] = { name, units: 0, gross: 0, target: 18, site: r.site || 'Fairfield' };
+      }
+      consultantMap[name].units++;
+      consultantMap[name].gross += r.gross_margin || r.gross || 4500;
+    }
+
+    for (const t of targets) {
+      if (consultantMap[t.consultant_name]) {
+        consultantMap[t.consultant_name].target = t.target_units || 18;
+      } else {
+        consultantMap[t.consultant_name] = {
+          name: t.consultant_name,
+          units: 0,
+          gross: 0,
+          target: t.target_units || 18,
+          site: t.site || 'Fairfield',
+        };
+      }
+    }
+
+    const leaderboard = Object.values(consultantMap).map((c) => ({
+      ...c,
+      pacePct: Math.round((c.units / (c.target || 1)) * 100),
+    })).sort((a, b) => b.units - a.units);
+
+    // ── Site vs Site Breakdown (§5.5) ────────────────────────────────────────
+    const siteMap = {};
+    for (const r of allSalesLog) {
+      const site = r.site || 'Fairfield';
+      if (!siteMap[site]) siteMap[site] = { site, units: 0, gross: 0 };
+      siteMap[site].units++;
+      siteMap[site].gross += r.gross_margin || r.gross || 4500;
+    }
 
     return {
       totalUnits,
@@ -1323,6 +1989,11 @@ const crmService = {
       pacePct,
       totalGross,
       networkConversion: 38.4,
+      pipelineByStage,
+      ageing,
+      slaBreaches,
+      leaderboard,
+      siteBreakdown: Object.values(siteMap),
     };
   },
 
