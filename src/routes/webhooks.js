@@ -193,7 +193,7 @@ router.post('/mobilemessage/status', async (req, res, next) => {
 });
 
 // ─── 3. Lead Centre Webhook (§7.3 & §7.4, AC-11 Zero Demo Bleed) ──────────────
-router.post('/lead-centre', async (req, res, next) => {
+router.post(['/lead', '/lead-centre'], async (req, res, next) => {
   try {
     const { event_id, event, source, customer_keys = {}, payload = {}, isDemonstration, demo_mode } = req.body;
     const crmService = require('../services/crmService');
