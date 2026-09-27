@@ -133,6 +133,36 @@ router.post('/customers/:id/unlink', async (req, res, next) => {
   }
 });
 
+// Customer 360 Documents Vault (§5.1)
+router.get('/customers/:id/documents', async (req, res, next) => {
+  try {
+    const docs = await crmService.getCustomerDocuments(req.params.id);
+    res.json({ success: true, count: docs.length, data: docs });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/customers/:id/documents', async (req, res, next) => {
+  try {
+    const doc = await crmService.addCustomerDocument(req.params.id, req.body, req.user);
+    res.status(201).json({ success: true, message: 'Document attached successfully', data: doc });
+  } catch (err) {
+    if (err.statusCode) return res.status(err.statusCode).json({ success: false, message: err.message });
+    next(err);
+  }
+});
+
+router.delete('/customers/:id/documents/:docId', async (req, res, next) => {
+  try {
+    const result = await crmService.deleteCustomerDocument(req.params.id, req.params.docId, req.user);
+    res.json({ success: true, ...result });
+  } catch (err) {
+    if (err.statusCode) return res.status(err.statusCode).json({ success: false, message: err.message });
+    next(err);
+  }
+});
+
 // ─── 2. Unified Timeline & Note Fanout (§5.2, AC-2, AC-3) ───────────────────
 router.get('/customers/:id/timeline', async (req, res, next) => {
   try {
@@ -264,6 +294,19 @@ router.patch('/opportunities/:id', async (req, res, next) => {
     if (err.statusCode) {
       return res.status(err.statusCode).json({ success: false, message: err.message });
     }
+    next(err);
+  }
+});
+
+router.post('/opportunities/:id/request-delivery-date', async (req, res, next) => {
+  try {
+    const { requestedDate, reason } = req.body;
+    if (!requestedDate) {
+      return res.status(400).json({ success: false, message: 'requestedDate is required' });
+    }
+    const result = await crmService.requestDeliveryDateChange(req.params.id, requestedDate, reason, req.user);
+    res.json({ success: true, message: 'Delivery date change request submitted', data: result });
+  } catch (err) {
     next(err);
   }
 });

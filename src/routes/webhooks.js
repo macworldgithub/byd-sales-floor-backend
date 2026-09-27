@@ -459,6 +459,46 @@ router.post('/delivery', async (req, res, next) => {
           updatedAt: new Date(),
         });
       }
+    } else if (event === 'delivery.exception_raised' || event === 'delivery.exception' || event === 'delivery.alert') {
+      const alertReason = payload.reason || payload.message || payload.details || payload.alert || 'Handover Action Required';
+      const excType = payload.exception_type || payload.type || 'handover_exception';
+      const alertTitle = payload.title || `Delivery Exception: ${excType.replace(/_/g, ' ').toUpperCase()}`;
+
+      if (matchingOpp) {
+        await crmService.updateOpportunity(matchingOpp.opportunity_id, {
+          has_delivery_alert: true,
+          delivery_alert: alertReason,
+          delivery_exception_type: excType,
+          delivery_exception_raised_at: new Date(),
+        });
+      }
+
+      if (targetCustomerId) {
+        const tlColl = deliveryConn.db.collection('timelineevents');
+        const crypto = require('crypto');
+        await tlColl.insertOne({
+          event_id: `EVT-DCE-${crypto.randomUUID()}`,
+          customer_id: targetCustomerId,
+          opportunity_id: matchingOpp?.opportunity_id || null,
+          type: 'alert',
+          title: alertTitle,
+          content: alertReason,
+          author: payload.author || payload.author_name || 'Delivery Operations',
+          source: 'Delivery Centre',
+          occurred_at: new Date(),
+          timestamp_aest: new Date().toLocaleString('en-AU', { timeZone: 'Australia/Melbourne' }) + ' AEST',
+          visibility: 'internal',
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+      }
+
+      if (client_id) {
+        await clientColl.updateOne(
+          { $or: [{ id: client_id }, { client_id }] },
+          { $set: { alert: alertReason, updatedAt: new Date() } }
+        );
+      }
     }
 
     return res.status(200).json({ success: true, event_id, message: 'Delivery Centre webhook processed' });

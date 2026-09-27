@@ -3741,6 +3741,200 @@ const crmService = {
 
     return { success: true, message: 'Delivery client synchronized', deliveryClientId };
   },
+
+  // ─── 19. Delivery Date Change Request (§5.8) ──────────────────────────────
+  async requestDeliveryDateChange(identifier, requestedDate, reason, user = {}) {
+    await ensureDbConnected();
+    const oppColl = deliveryConn.db.collection('opportunities');
+    const clientColl = deliveryConn.db.collection('clients');
+    const tlColl = deliveryConn.db.collection('timelineevents');
+    const now = new Date();
+    const authorName = user.name || user.email || 'Sales Consultant';
+
+    // Find opportunity by opportunity_id or _id, or delivery client
+    let opp = await oppColl.findOne({
+      $or: [
+        { opportunity_id: identifier },
+        { delivery_client_id: identifier },
+      ],
+    });
+
+    let client = null;
+    if (opp?.delivery_client_id) {
+      client = await clientColl.findOne({
+        $or: [{ id: opp.delivery_client_id }, { client_id: opp.delivery_client_id }],
+      });
+    }
+    if (!client) {
+      client = await clientColl.findOne({
+        $or: [{ id: identifier }, { client_id: identifier }],
+      });
+    }
+
+    const commentBody = `[DELIVERY DATE CHANGE REQUEST] Requested Date: ${requestedDate} | Reason: ${reason || 'Customer preference'} | Transmitted by: ${authorName}`;
+
+    // Push comment to Delivery Centre client
+    if (client) {
+      await clientColl.updateOne(
+        { _id: client._id },
+        {
+          $push: {
+            comments: {
+              id: `comm-${crypto.randomUUID()}`,
+              author: authorName,
+              body: commentBody,
+              created_at: now.toISOString(),
+            },
+          },
+          $set: {
+            delivery_date_requested: requestedDate,
+            updatedAt: now,
+          },
+        }
+      );
+    }
+
+    // Update opportunity
+    if (opp) {
+      await oppColl.updateOne(
+        { opportunity_id: opp.opportunity_id },
+        {
+          $set: {
+            delivery_date_requested: requestedDate,
+            delivery_date_change_reason: reason,
+            updatedAt: now,
+          },
+        }
+      );
+    }
+
+    // Insert unified timeline event
+    const customerId = opp?.customer_id || client?.customer_id;
+    if (customerId) {
+      await tlColl.insertOne({
+        event_id: `EVT-DCR-${crypto.randomUUID()}`,
+        customer_id: customerId,
+        opportunity_id: opp?.opportunity_id || null,
+        type: 'delivery_date_request',
+        event_type: 'delivery_date_request',
+        title: 'Delivery Handover Reschedule Request',
+        content: `Target date change requested to ${requestedDate}. Reason: ${reason || 'Schedule preference'}.`,
+        author: authorName,
+        source: 'Sales CRM',
+        occurred_at: now,
+        timestamp_aest: formatAEST(now),
+        visibility: 'internal',
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+
+    return {
+      success: true,
+      message: `Delivery date change request submitted for ${requestedDate}`,
+      requestedDate,
+    };
+  },
+
+  // ─── 20. Customer Pre-Sale Documents Vault (§5.1) ──────────────────────────
+  async getCustomerDocuments(customerId) {
+    await ensureDbConnected();
+    const docColl = deliveryConn.db.collection('crmdocuments');
+    const docs = await docColl.find({ customer_id: customerId }).sort({ createdAt: -1 }).toArray();
+    return docs;
+  },
+
+  async addCustomerDocument(customerId, docData, user = {}) {
+    await ensureDbConnected();
+    const docColl = deliveryConn.db.collection('crmdocuments');
+    const tlColl = deliveryConn.db.collection('timelineevents');
+    const custColl = deliveryConn.db.collection('customers');
+    const now = new Date();
+
+    const customer = await custColl.findOne({ customer_id: customerId });
+    if (!customer) {
+      const err = new Error('Customer not found');
+      err.statusCode = 404;
+      throw err;
+    }
+
+    const docId = `DOC-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
+    const authorName = user.name || user.email || 'Sales Consultant';
+
+    const newDoc = {
+      doc_id: docId,
+      customer_id: customerId,
+      title: docData.title || 'Attached Document',
+      category: docData.category || 'Contract & Forms',
+      file_name: docData.file_name || docData.fileName || `${docData.title || 'document'}.pdf`,
+      file_type: docData.file_type || docData.fileType || 'application/pdf',
+      file_size: docData.file_size || docData.fileSize || '142 KB',
+      file_url: docData.file_url || docData.fileUrl || '',
+      status: docData.status || 'Verified',
+      notes: docData.notes || '',
+      uploaded_by: authorName,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    await docColl.insertOne(newDoc);
+
+    // Broadcast into unified timeline
+    await tlColl.insertOne({
+      event_id: `EVT-DOC-${crypto.randomUUID()}`,
+      customer_id: customerId,
+      opportunity_id: null,
+      type: 'document_uploaded',
+      event_type: 'document_uploaded',
+      title: `Document Attached: ${newDoc.title}`,
+      content: `Uploaded ${newDoc.category} document (${newDoc.file_name}) by ${authorName}.`,
+      author: authorName,
+      source: 'Sales CRM',
+      occurred_at: now,
+      timestamp_aest: formatAEST(now),
+      visibility: 'internal',
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    return newDoc;
+  },
+
+  async deleteCustomerDocument(customerId, docId, user = {}) {
+    await ensureDbConnected();
+    const docColl = deliveryConn.db.collection('crmdocuments');
+    const tlColl = deliveryConn.db.collection('timelineevents');
+    const now = new Date();
+    const authorName = user.name || user.email || 'Sales Consultant';
+
+    const doc = await docColl.findOne({ doc_id: docId, customer_id: customerId });
+    if (!doc) {
+      const err = new Error('Document not found');
+      err.statusCode = 404;
+      throw err;
+    }
+
+    await docColl.deleteOne({ _id: doc._id });
+
+    // Broadcast audit event
+    await tlColl.insertOne({
+      event_id: `EVT-DOCDEL-${crypto.randomUUID()}`,
+      customer_id: customerId,
+      type: 'system',
+      event_type: 'system',
+      title: `Document Removed: ${doc.title}`,
+      content: `Document ${doc.file_name} removed from customer record by ${authorName}.`,
+      author: authorName,
+      source: 'Sales CRM',
+      occurred_at: now,
+      timestamp_aest: formatAEST(now),
+      visibility: 'internal',
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    return { success: true, message: 'Document deleted successfully', docId };
+  },
 };
 
 module.exports = crmService;

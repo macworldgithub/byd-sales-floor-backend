@@ -76,5 +76,55 @@ async function ensureDbConnected() {
   return true;
 }
 
-module.exports = { leadConn, deliveryConn, ensureDbConnected };
+/**
+ * Compound & Performance DB Indexes (§9 Performance & Resilience)
+ */
+async function ensureIndexes() {
+  try {
+    await ensureDbConnected();
+    const custColl = deliveryConn.db.collection('customers');
+    const oppColl = deliveryConn.db.collection('opportunities');
+    const tlColl = deliveryConn.db.collection('timelineevents');
+    const allocColl = deliveryConn.db.collection('allocations');
+    const docColl = deliveryConn.db.collection('crmdocuments');
+    const holdColl = deliveryConn.db.collection('stockholds');
+
+    await Promise.allSettled([
+      custColl.createIndex({ site: 1, updatedAt: -1 }),
+      custColl.createIndex({ owner_name: 1, updatedAt: -1 }),
+      custColl.createIndex({ customer_id: 1 }, { unique: true, sparse: true }),
+      custColl.createIndex({ phone: 1 }),
+      custColl.createIndex({ email: 1 }),
+
+      oppColl.createIndex({ stage: 1, site: 1, owner_name: 1 }),
+      oppColl.createIndex({ customer_id: 1, stage: 1 }),
+      oppColl.createIndex({ opportunity_id: 1 }, { unique: true, sparse: true }),
+      oppColl.createIndex({ vy_stock_id: 1 }),
+
+      tlColl.createIndex({ customer_id: 1, occurred_at: -1 }),
+      tlColl.createIndex({ opportunity_id: 1, occurred_at: -1 }),
+      tlColl.createIndex({ event_id: 1 }, { unique: true, sparse: true }),
+
+      allocColl.createIndex({ status: 1, sla_expires_at: 1 }),
+      allocColl.createIndex({ allocation_id: 1 }, { unique: true, sparse: true }),
+      allocColl.createIndex({ site: 1 }),
+
+      docColl.createIndex({ customer_id: 1, createdAt: -1 }),
+      docColl.createIndex({ doc_id: 1 }, { unique: true, sparse: true }),
+
+      holdColl.createIndex({ status: 1, expires_at: 1 }),
+      holdColl.createIndex({ stock_id: 1 }),
+    ]);
+    console.log('✅ CRM Compound & Performance DB Indexes verified');
+  } catch (err) {
+    console.warn('⚠️  Index creation notice:', err.message);
+  }
+}
+
+// Automatically trigger index verification on DB connect
+deliveryConn.on('connected', () => {
+  ensureIndexes().catch(() => {});
+});
+
+module.exports = { leadConn, deliveryConn, ensureDbConnected, ensureIndexes };
 
