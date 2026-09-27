@@ -17,11 +17,32 @@ router.use(authenticate);
 // ─── 1. Customers 360 & Lookup (§5.1, AC-1) ──────────────────────────────────
 router.get('/customers/export-csv', async (req, res, next) => {
   try {
-    const csvData = await crmService.exportCustomersCsv(req.query);
+    const csvData = await crmService.exportCustomersCsv(req.query, req.user);
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="byd-customers-${new Date().toISOString().split('T')[0]}.csv"`);
     res.status(200).send(csvData);
   } catch (err) {
+    next(err);
+  }
+});
+
+// Privacy Act (APP 12/13) Data Portability Export & Anonymization (§5.10)
+router.get('/customers/:id/privacy-export', async (req, res, next) => {
+  try {
+    const data = await crmService.getPrivacyExport(req.params.id, req.user);
+    res.json({ success: true, data });
+  } catch (err) {
+    if (err.statusCode) return res.status(err.statusCode).json({ success: false, message: err.message });
+    next(err);
+  }
+});
+
+router.post('/customers/:id/privacy-anonymize', requireRole('manager', 'sales_manager', 'site_admin', 'super_admin', 'admin'), async (req, res, next) => {
+  try {
+    const result = await crmService.anonymizeCustomerPrivacy(req.params.id, req.user, req.body.reason);
+    res.json({ success: true, message: 'Customer record anonymized per Privacy Act compliance', ...result });
+  } catch (err) {
+    if (err.statusCode) return res.status(err.statusCode).json({ success: false, message: err.message });
     next(err);
   }
 });
@@ -169,7 +190,7 @@ router.delete('/customers/:id/notes/:noteId', async (req, res, next) => {
 // ─── 3. Opportunities & Deals Pipeline (§5.4) ───────────────────────────────
 router.get('/opportunities/export-csv', async (req, res, next) => {
   try {
-    const csvData = await crmService.exportOpportunitiesCsv(req.query);
+    const csvData = await crmService.exportOpportunitiesCsv(req.query, req.user);
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="byd-opportunities-${new Date().toISOString().split('T')[0]}.csv"`);
     res.status(200).send(csvData);
@@ -307,7 +328,7 @@ router.post('/allocations/:id/accept', async (req, res, next) => {
   }
 });
 
-router.post('/allocations/:id/reassign', async (req, res, next) => {
+router.post('/allocations/:id/reassign', requireRole('manager', 'sales_manager', 'site_admin', 'super_admin', 'admin', 'bdc'), async (req, res, next) => {
   try {
     const { consultantName } = req.body;
     const reassigned = await crmService.reassignAllocation(req.params.id, consultantName);
@@ -357,10 +378,19 @@ router.post('/vy/release', async (req, res, next) => {
   }
 });
 
+router.post('/vy/check-expired-holds', async (req, res, next) => {
+  try {
+    const result = await crmService.checkAndReleaseExpiredHolds();
+    res.json({ success: true, message: 'Expired holds checked and released', ...result });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // ─── 7. Sales Log & Delivery Watch (§5.7, §5.8, AC-9) ───────────────────────
 router.get('/saleslog/export-csv', async (req, res, next) => {
   try {
-    const csvData = await crmService.exportSalesLogCsv(req.query);
+    const csvData = await crmService.exportSalesLogCsv(req.query, req.user);
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="byd-saleslog-${new Date().toISOString().split('T')[0]}.csv"`);
     res.status(200).send(csvData);
@@ -389,7 +419,7 @@ router.get('/saleslog', async (req, res, next) => {
 
 router.post('/saleslog/reconcile-all', requireRole('manager', 'sales_manager', 'site_admin', 'super_admin', 'admin'), async (req, res, next) => {
   try {
-    const result = await crmService.reconcileAllSalesLogs(req.body.site || req.query.site);
+    const result = await crmService.runNightlySalesLogReconcile(req.body.site || req.query.site);
     res.json({ success: true, message: 'All outstanding Sales Log rows reconciled', ...result });
   } catch (err) {
     next(err);
@@ -400,6 +430,55 @@ router.post('/saleslog/:id/reconcile', async (req, res, next) => {
   try {
     const reconciled = await crmService.reconcileSalesLogRow(req.params.id);
     res.json({ success: true, message: 'Sales Log row reconciled', data: reconciled });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Inbound Exception Queue Endpoints (§5.7, Phase 2/3)
+router.get('/saleslog/exceptions', requireRole('manager', 'sales_manager', 'site_admin', 'super_admin', 'admin', 'bdc'), async (req, res, next) => {
+  try {
+    const result = await crmService.getSalesLogExceptions(req.query);
+    res.json(result);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/saleslog/exceptions/:id/resolve', requireRole('manager', 'sales_manager', 'site_admin', 'super_admin', 'admin'), async (req, res, next) => {
+  try {
+    const resolved = await crmService.resolveSalesLogException(req.params.id, req.body, req.user);
+    res.json({ success: true, message: 'Sales Log exception resolved', data: resolved });
+  } catch (err) {
+    if (err.statusCode) return res.status(err.statusCode).json({ success: false, message: err.message });
+    next(err);
+  }
+});
+
+router.post('/saleslog/exceptions/:id/dismiss', requireRole('manager', 'sales_manager', 'site_admin', 'super_admin', 'admin'), async (req, res, next) => {
+  try {
+    const result = await crmService.dismissSalesLogException(req.params.id, req.body.reason, req.user);
+    res.json({ success: true, message: 'Sales Log exception dismissed', ...result });
+  } catch (err) {
+    if (err.statusCode) return res.status(err.statusCode).json({ success: false, message: err.message });
+    next(err);
+  }
+});
+
+// Configurable Sales Log Field Mapping Endpoints (§5.7)
+router.get('/settings/saleslog-mapping', async (req, res, next) => {
+  try {
+    const mapping = await crmService.getSalesLogMapping();
+    res.json({ success: true, data: mapping });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/settings/saleslog-mapping', requireRole('manager', 'sales_manager', 'site_admin', 'super_admin', 'admin'), async (req, res, next) => {
+  try {
+    const saved = await crmService.saveSalesLogMapping(req.body, req.user);
+    res.json({ success: true, message: 'Field mapping configuration saved', data: saved });
   } catch (err) {
     next(err);
   }
@@ -436,7 +515,7 @@ router.get('/boards/me', async (req, res, next) => {
   }
 });
 
-router.get('/boards/team', async (req, res, next) => {
+router.get('/boards/team', requireRole('manager', 'sales_manager', 'site_admin', 'super_admin', 'admin', 'bdc'), async (req, res, next) => {
   try {
     const data = await crmService.getBoardTeam(req.query);
     res.json({ success: true, data });
@@ -463,7 +542,17 @@ router.post('/targets', requireRole('manager', 'sales_manager', 'site_admin', 's
   }
 });
 
-// ─── 9. Phone Call Outreach Logging (§5.9) ──────────────────────────────────
+// ─── 9. Real-Time Delivery & SLA Notifications (§5.8, §5.3) ─────────────────
+router.get('/notifications', async (req, res, next) => {
+  try {
+    const result = await crmService.getNotifications(req.query, req.user);
+    res.json(result);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── 10. Phone Call Outreach Logging (§5.9) ─────────────────────────────────
 router.post('/customers/:id/calls', async (req, res, next) => {
   try {
     const callLog = await crmService.logPhoneCall(req.params.id, {
@@ -476,4 +565,56 @@ router.post('/customers/:id/calls', async (req, res, next) => {
   }
 });
 
+// ─── 11. CRM Appointments & Calendar (§5.5, §5.9, AC-4) ────────────────────
+
+router.get('/appointments', async (req, res, next) => {
+  try {
+    const result = await crmService.getAppointments(req.query);
+    res.json(result);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/appointments', async (req, res, next) => {
+  try {
+    const appt = await crmService.createAppointment(req.body, req.user);
+    res.status(201).json({ success: true, message: 'Appointment booked', data: appt });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.patch('/appointments/:id', async (req, res, next) => {
+  try {
+    const updated = await crmService.updateAppointment(req.params.id, req.body, req.user);
+    res.json({ success: true, message: 'Appointment updated', data: updated });
+  } catch (err) {
+    if (err.statusCode) return res.status(err.statusCode).json({ success: false, message: err.message });
+    next(err);
+  }
+});
+
+// ─── 12. Inbound Sync Exceptions & Delivery Pending (§5.7, §5.8, §7.5) ──────
+router.get('/sync-pending', async (req, res, next) => {
+  try {
+    const result = await crmService.getSyncPending(req.query);
+    res.json(result);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/sync-pending/:id/retry', requireRole('sales_manager', 'site_admin', 'super_admin', 'sales_consultant'), async (req, res, next) => {
+  try {
+    const result = await crmService.retryDeliverySync(req.params.id, req.user);
+    res.json(result);
+  } catch (err) {
+    if (err.statusCode) return res.status(err.statusCode).json({ success: false, message: err.message });
+    next(err);
+  }
+});
+
 module.exports = router;
+
+

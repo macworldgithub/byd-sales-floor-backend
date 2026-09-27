@@ -133,8 +133,9 @@ router.post(
           );
         }
 
+        const crypto = require('crypto');
         await tlColl.insertOne({
-          event_id: 'EVT-' + Math.random().toString(36).substring(2, 9).toUpperCase(),
+          event_id: `EVT-${crypto.randomUUID()}`,
           customer_id: cust?.customer_id || `CUST-APPT-${appointment._id}`,
           type: 'appointment',
           event_type: 'appointment',
@@ -179,8 +180,9 @@ const generateIcs = (appts) => {
     const description = `BYD Customer: ${a.prospectName}\\nPhone: ${a.phone}\\nConsultant: ${a.consultantName}\\nNotes: ${a.notes || 'None'}`;
     const location = a.location || a.dealership || 'BYD Melbourne CBD Showroom';
 
+    const crypto = require('crypto');
     ics.push('BEGIN:VEVENT');
-    ics.push(`UID:appt-${a._id || Math.random()}@sales.bydharmony.app`);
+    ics.push(`UID:appt-${a._id || crypto.randomUUID()}@sales.bydharmony.app`);
     ics.push(`DTSTAMP:${new Date().toISOString().replace(/[-:]/g, '').split('.')[0]}Z`);
     ics.push(`DTSTART:${startStr}`);
     ics.push(`DTEND:${endStr}`);
@@ -294,8 +296,9 @@ router.patch('/:id', async (req, res, next) => {
         }).catch(() => {});
         await audit(req, appt.leadId, `Test drive marked No Show: ${appt.prospectName}`);
       }
+      const crypto = require('crypto');
       await tlColl.insertOne({
-        event_id: `EVT-${Date.now().toString().slice(-4)}`,
+        event_id: `EVT-${crypto.randomUUID()}`,
         title: `Appointment Status: No Show · ${appt.type}`,
         content: `Customer ${appt.prospectName} did not attend scheduled ${appt.vehicle || 'test drive'}. Triggered no-show re-engagement sequence.`,
         type: 'appointment',
@@ -314,8 +317,9 @@ router.patch('/:id', async (req, res, next) => {
         }).catch(() => {});
         await audit(req, appt.leadId, `Test drive completed successfully: ${appt.prospectName}`);
       }
+      const crypto = require('crypto');
       await tlColl.insertOne({
-        event_id: `EVT-${Date.now().toString().slice(-4)}`,
+        event_id: `EVT-${crypto.randomUUID()}`,
         title: `Appointment Completed: ${appt.type} · ${appt.vehicle || 'BYD'}`,
         content: `Test drive successfully completed with ${appt.prospectName}. Buyer intent elevated to Committed.`,
         type: 'appointment',

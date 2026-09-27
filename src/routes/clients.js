@@ -157,8 +157,9 @@ router.post(
           );
         }
 
+        const crypto = require('crypto');
         await tlColl.insertOne({
-          event_id: 'EVT-' + Math.random().toString(36).substring(2, 9).toUpperCase(),
+          event_id: `EVT-${crypto.randomUUID()}`,
           customer_id: customer?.customer_id || `CUST-DEL-${client._id}`,
           type: 'delivery_stage_change',
           event_type: 'delivery_stage_change',
@@ -239,8 +240,9 @@ router.patch('/:id', async (req, res, next) => {
       });
 
       if (req.body.stage && req.body.stage !== previousClient.stage) {
+        const crypto = require('crypto');
         await tlColl.insertOne({
-          event_id: 'EVT-' + Math.random().toString(36).substring(2, 9).toUpperCase(),
+          event_id: `EVT-${crypto.randomUUID()}`,
           customer_id: cust?.customer_id || `CUST-DEL-${client._id}`,
           type: 'delivery_stage_change',
           event_type: 'delivery_stage_change',
@@ -258,8 +260,9 @@ router.patch('/:id', async (req, res, next) => {
       }
 
       if (req.body.delivery_date && req.body.delivery_date !== previousClient.delivery_date) {
+        const crypto = require('crypto');
         await tlColl.insertOne({
-          event_id: 'EVT-' + Math.random().toString(36).substring(2, 9).toUpperCase(),
+          event_id: `EVT-${crypto.randomUUID()}`,
           customer_id: cust?.customer_id || `CUST-DEL-${client._id}`,
           type: 'delivery_date_change',
           event_type: 'delivery_date_change',
@@ -334,8 +337,9 @@ router.post(
           $or: [{ delivery_client_id: String(req.params.id) }, last8 ? { phone: { $regex: last8, $options: 'i' } } : null].filter(Boolean),
         });
 
+        const crypto = require('crypto');
         await tlColl.insertOne({
-          event_id: 'EVT-' + Math.random().toString(36).substring(2, 9).toUpperCase(),
+          event_id: `EVT-${crypto.randomUUID()}`,
           customer_id: cust?.customer_id || `CUST-DEL-${client._id}`,
           type: 'note',
           event_type: 'note',

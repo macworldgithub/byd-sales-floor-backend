@@ -153,6 +153,49 @@ app.use((req, res, next) => {
 
 app.use(errorHandler);
 
+// ─── SLA Auto-Escalation Engine (§5.3, §7.3, AC-4) ──────────────────────────
+// Direct database SLA status check & auto-escalation every 5 minutes
+const SLA_INTERVAL_MS = 5 * 60 * 1000;
+let slaIntervalTimer = null;
+let holdExpiryTimer = null;
+let nightlyReconcileTimer = null;
+
+if (process.env.NODE_ENV !== 'test') {
+  // 1. SLA Auto-Escalation Engine
+  slaIntervalTimer = setInterval(async () => {
+    try {
+      const crmService = require('./services/crmService');
+      await crmService.checkAndEscalateSlas();
+    } catch (err) {
+      console.error('SLA auto-escalation check error:', err.message);
+    }
+  }, SLA_INTERVAL_MS);
+  if (slaIntervalTimer.unref) slaIntervalTimer.unref();
+
+  // 2. Virtual Yard 48h Stock Hold Auto-Release Engine (§5.6, AC-8)
+  holdExpiryTimer = setInterval(async () => {
+    try {
+      const crmService = require('./services/crmService');
+      await crmService.checkAndReleaseExpiredHolds();
+    } catch (err) {
+      console.error('VY Hold auto-release check error:', err.message);
+    }
+  }, SLA_INTERVAL_MS);
+  if (holdExpiryTimer.unref) holdExpiryTimer.unref();
+
+  // 3. Nightly Sales Log Reconcile Engine (§5.7, Phase 2) — runs every 6 hours
+  const RECONCILE_INTERVAL_MS = 6 * 60 * 60 * 1000;
+  nightlyReconcileTimer = setInterval(async () => {
+    try {
+      const crmService = require('./services/crmService');
+      await crmService.runNightlySalesLogReconcile();
+    } catch (err) {
+      console.error('Nightly Sales Log reconcile error:', err.message);
+    }
+  }, RECONCILE_INTERVAL_MS);
+  if (nightlyReconcileTimer.unref) nightlyReconcileTimer.unref();
+}
+
 // ─── Start Server & Graceful Shutdown ───────────────────────────────────────
 let server = null;
 if (require.main === module) {
@@ -165,6 +208,9 @@ if (require.main === module) {
 // Handle Graceful Shutdown for PM2 / Docker on VPS
 const handleShutdown = async (signal) => {
   console.log(`\n🛑 Received ${signal}. Gracefully stopping BYD Sales Floor API...`);
+  if (slaIntervalTimer) clearInterval(slaIntervalTimer);
+  if (holdExpiryTimer) clearInterval(holdExpiryTimer);
+  if (nightlyReconcileTimer) clearInterval(nightlyReconcileTimer);
   if (server) {
     server.close(async () => {
       console.log('✅ HTTP server closed. Closing MongoDB connections...');

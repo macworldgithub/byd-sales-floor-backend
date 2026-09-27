@@ -168,8 +168,9 @@ router.post(
           $or: [client_id ? { delivery_client_id: String(client_id) } : null, last8 ? { phone: { $regex: last8, $options: 'i' } } : null].filter(Boolean),
         });
 
+        const crypto = require('crypto');
         await tlColl.insertOne({
-          event_id: 'EVT-' + Math.random().toString(36).substring(2, 9).toUpperCase(),
+          event_id: `EVT-${crypto.randomUUID()}`,
           customer_id: cust?.customer_id || `CUST-SMS-${message._id}`,
           type: 'sms',
           event_type: 'sms',

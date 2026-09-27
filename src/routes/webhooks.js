@@ -159,6 +159,14 @@ router.post('/lead-centre', async (req, res, next) => {
     const { event_id, event, source, customer_keys = {}, payload = {}, isDemonstration, demo_mode } = req.body;
     const crmService = require('../services/crmService');
 
+    // Universal Idempotency (§7.4, §9)
+    if (event_id && event !== 'lead.allocated') {
+      const idem = await crmService.checkAndStoreIdempotency(event_id, 'lead-centre', req.body);
+      if (idem.duplicate) {
+        return res.status(200).json({ success: true, duplicate: true, event_id, message: 'Event already processed' });
+      }
+    }
+
     // AC-11 Zero Demo Bleed: Quarantine demo-mode records from production CRM
     if (isDemonstration || demo_mode || source === 'demo_suite') {
       return res.status(200).json({
@@ -247,6 +255,13 @@ router.post('/virtual-yard', async (req, res, next) => {
     const crmService = require('../services/crmService');
     const { deliveryConn } = require('../db');
 
+    if (event_id) {
+      const idem = await crmService.checkAndStoreIdempotency(event_id, 'virtual-yard', req.body);
+      if (idem.duplicate) {
+        return res.status(200).json({ success: true, duplicate: true, event_id, message: 'Event already processed' });
+      }
+    }
+
     if (event === 'vy.stock_changed' && payload.stock_id) {
       // If stock was sold elsewhere, mark or warn matching open opportunities
       if (payload.status === 'Sold' || payload.status === 'withdrawn') {
@@ -275,6 +290,14 @@ router.post('/sales-log', async (req, res, next) => {
   try {
     const { event_id, payload = {} } = req.body;
     const crmService = require('../services/crmService');
+
+    if (event_id) {
+      const idem = await crmService.checkAndStoreIdempotency(event_id, 'sales-log', req.body);
+      if (idem.duplicate) {
+        return res.status(200).json({ success: true, duplicate: true, event_id, message: 'Event already processed' });
+      }
+    }
+
     if (payload.sales_log_id) {
       await crmService.reconcileSalesLogRow(payload.sales_log_id);
     }
@@ -291,11 +314,20 @@ router.post('/delivery', async (req, res, next) => {
     const crmService = require('../services/crmService');
     const { deliveryConn } = require('../db');
 
+    if (event_id) {
+      const idem = await crmService.checkAndStoreIdempotency(event_id, 'delivery', req.body);
+      if (idem.duplicate) {
+        return res.status(200).json({ success: true, duplicate: true, event_id, message: 'Event already processed' });
+      }
+    }
+
+    const oppColl = deliveryConn.db.collection('opportunities');
+    const matchingOpp = await oppColl.findOne({
+      $or: [{ delivery_client_id: client_id }, { _id: client_id }],
+    });
+
     // If Delivery comment added, stage changed, or message sent, project onto matching CRM opportunity
     if (event === 'delivery.stage_changed' && payload.new_stage) {
-      const oppResult = await crmService.getOpportunities({ limit: 1000 });
-      const opps = oppResult.data || [];
-      const matchingOpp = opps.find((o) => o.delivery_client_id === client_id);
       if (matchingOpp) {
         await crmService.updateOpportunity(matchingOpp.opportunity_id, {
           delivery_stage: payload.new_stage,
@@ -303,8 +335,9 @@ router.post('/delivery', async (req, res, next) => {
 
         // Broadcast timeline event into unified stream
         const tlColl = deliveryConn.db.collection('timelineevents');
+        const crypto = require('crypto');
         await tlColl.insertOne({
-          event_id: `EVT-${Date.now().toString().slice(-4)}`,
+          event_id: `EVT-${crypto.randomUUID()}`,
           customer_id: matchingOpp.customer_id,
           opportunity_id: matchingOpp.opportunity_id,
           type: 'delivery_stage_change',
@@ -320,13 +353,11 @@ router.post('/delivery', async (req, res, next) => {
         });
       }
     } else if (event === 'delivery.comment_added' && payload.comment) {
-      const oppResult = await crmService.getOpportunities({ limit: 1000 });
-      const opps = oppResult.data || [];
-      const matchingOpp = opps.find((o) => o.delivery_client_id === client_id);
       if (matchingOpp) {
         const tlColl = deliveryConn.db.collection('timelineevents');
+        const crypto = require('crypto');
         await tlColl.insertOne({
-          event_id: `EVT-${Date.now().toString().slice(-4)}`,
+          event_id: `EVT-${crypto.randomUUID()}`,
           customer_id: matchingOpp.customer_id,
           opportunity_id: matchingOpp.opportunity_id,
           type: 'note',
@@ -342,16 +373,14 @@ router.post('/delivery', async (req, res, next) => {
         });
       }
     } else if (event === 'delivery.message' && (payload.text || payload.body)) {
-      const oppResult = await crmService.getOpportunities({ limit: 1000 });
-      const opps = oppResult.data || [];
-      const matchingOpp = opps.find((o) => o.delivery_client_id === client_id);
       if (matchingOpp) {
         const tlColl = deliveryConn.db.collection('timelineevents');
+        const crypto = require('crypto');
         await tlColl.insertOne({
-          event_id: `EVT-DCM-${Date.now().toString().slice(-4)}`,
+          event_id: `EVT-DCM-${crypto.randomUUID()}`,
           customer_id: matchingOpp.customer_id,
           opportunity_id: matchingOpp.opportunity_id,
-          type: 'sms',
+          type: 'sms_out',
           title: 'Delivery Customer SMS',
           content: payload.text || payload.body,
           author: payload.author || 'Delivery Handover Specialist',

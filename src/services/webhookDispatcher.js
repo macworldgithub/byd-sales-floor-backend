@@ -67,10 +67,10 @@ const webhookDispatcher = {
    * @param {string} event - e.g. 'crm.note_added', 'crm.deal_sold', 'crm.stage_changed'
    * @param {object} payload - event details
    * @param {object} [customerKeys] - { customer_id, phone, email, name }
-   */
   async emit(event, payload = {}, customerKeys = {}) {
+    const crypto = require('crypto');
     const envelope = {
-      event_id: `EVT-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`,
+      event_id: `EVT-${crypto.randomUUID()}`,
       event,
       source: 'crm',
       timestamp: new Date().toISOString(),

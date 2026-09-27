@@ -164,10 +164,14 @@ const clientSchema = new mongoose.Schema(
 
 clientSchema.index({ phone: 1 });
 clientSchema.index({ email: 1 });
-clientSchema.index({ salesperson: 1 });
 clientSchema.index({ stage: 1 });
 clientSchema.index({ delivery_date: 1 });
 clientSchema.index({ vin: 1 }, { sparse: true });
 clientSchema.index({ vy_order_id: 1 }, { sparse: true });
+clientSchema.index({ crm_customer_id: 1 }, { sparse: true });
+clientSchema.index({ crm_opportunity_id: 1 }, { sparse: true });
 
 module.exports = deliveryConn.model('Client', clientSchema);
+
+
+

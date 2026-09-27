@@ -211,8 +211,9 @@ router.post(
           updatedAt: now,
         });
 
+        const crypto = require('crypto');
         await tlColl.insertOne({
-          event_id: 'EVT-' + Math.random().toString(36).substring(2, 9).toUpperCase(),
+          event_id: `EVT-${crypto.randomUUID()}`,
           customer_id: customer.customer_id,
           opportunity_id,
           type: 'system',
@@ -284,8 +285,9 @@ router.patch('/:id', async (req, res, next) => {
           await custColl.updateOne({ customer_id: cust.customer_id }, { $set: custPatch });
 
           if (req.body.stage) {
+            const crypto = require('crypto');
             await tlColl.insertOne({
-              event_id: 'EVT-' + Math.random().toString(36).substring(2, 9).toUpperCase(),
+              event_id: `EVT-${crypto.randomUUID()}`,
               customer_id: cust.customer_id,
               type: 'stage_change',
               event_type: 'stage_change',
@@ -409,8 +411,9 @@ router.post(
         });
 
         if (cust) {
+          const crypto = require('crypto');
           await tlColl.insertOne({
-            event_id: 'EVT-' + Math.random().toString(36).substring(2, 9).toUpperCase(),
+            event_id: `EVT-${crypto.randomUUID()}`,
             customer_id: cust.customer_id,
             type: 'note',
             event_type: 'note',

@@ -29,6 +29,7 @@ const customerSchema = new mongoose.Schema(
       default: 'Individual',
     },
     company_name: { type: String, default: null },
+    vy_customer_id: { type: String, default: null, index: true },
     lead_prospect_id: { type: String, default: null, index: true },
     delivery_client_id: { type: String, default: null, index: true },
     consent_sms: { type: Boolean, default: true },

@@ -41,7 +41,7 @@ const timelineEventSchema = new mongoose.Schema(
     timestamp: { type: Date, default: Date.now, index: true },
     visibility: {
       type: String,
-      enum: ['internal', 'customer_facing'],
+      enum: ['internal', 'customer_facing', 'customer-facing'],
       default: 'internal',
     },
     deep_link: { type: String, default: null },
