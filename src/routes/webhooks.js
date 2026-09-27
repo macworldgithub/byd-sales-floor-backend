@@ -115,6 +115,45 @@ router.post('/mobilemessage/inbound', async (req, res, next) => {
       }).catch(() => {});
     }
 
+    // 5. Project Inbound SMS to CRM Customer Unified Timeline (§5.2, AC-3)
+    try {
+      const { deliveryConn } = require('../db');
+      const custColl = deliveryConn.db.collection('customers');
+      const targetCustomer = await custColl.findOne({
+        phone: { $regex: phone.slice(-8) },
+      });
+      if (targetCustomer) {
+        const tlColl = deliveryConn.db.collection('timelineevents');
+        const crypto = require('crypto');
+        const eventId = `EVT-SMS-IN-${Date.now().toString(36).toUpperCase()}-${Math.floor(Math.random() * 1000)}`;
+        const now = new Date();
+        await tlColl.insertOne({
+          event_id: eventId,
+          customer_id: targetCustomer.customer_id,
+          type: 'sms_in',
+          event_type: 'sms_in',
+          title: `Inbound SMS from ${targetCustomer.name || phone}`,
+          content: text,
+          body: text,
+          author: targetCustomer.name || phone,
+          author_name: targetCustomer.name || phone,
+          source: 'MobileMessage SMS',
+          source_system: 'sms',
+          metadata: {
+            from: phone,
+            message_id: messageId,
+            direction: 'inbound',
+          },
+          timestamp: now,
+          occurred_at: now,
+          timestamp_aest: new Date().toLocaleString('en-AU', { timeZone: 'Australia/Melbourne' }) + ' AEST',
+          visibility: 'internal',
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
+    } catch (_) {}
+
     return res.status(200).json({
       success: true,
       message: 'Inbound SMS processed and conversation updated',
@@ -322,24 +361,51 @@ router.post('/delivery', async (req, res, next) => {
     }
 
     const oppColl = deliveryConn.db.collection('opportunities');
-    const matchingOpp = await oppColl.findOne({
+    const custColl = deliveryConn.db.collection('customers');
+    const clientColl = deliveryConn.db.collection('clients');
+
+    let matchingOpp = await oppColl.findOne({
       $or: [{ delivery_client_id: client_id }, { _id: client_id }],
     });
 
-    // If Delivery comment added, stage changed, or message sent, project onto matching CRM opportunity
+    let targetCustomerId = matchingOpp?.customer_id;
+
+    if (!matchingOpp) {
+      const matchingCustomer = await custColl.findOne({
+        $or: [{ delivery_client_id: client_id }, { customer_id: payload.crm_customer_id }],
+      });
+      if (matchingCustomer) {
+        targetCustomerId = matchingCustomer.customer_id;
+        matchingOpp = await oppColl.findOne({ customer_id: targetCustomerId });
+      } else {
+        // Try looking up delivery client document directly to match by phone
+        const dcDoc = await clientColl.findOne({ id: client_id });
+        if (dcDoc?.phone) {
+          const custByPhone = await custColl.findOne({ phone: { $regex: dcDoc.phone.slice(-8) } });
+          if (custByPhone) {
+            targetCustomerId = custByPhone.customer_id;
+            matchingOpp = await oppColl.findOne({ customer_id: targetCustomerId });
+          }
+        }
+      }
+    }
+
+    // If Delivery comment added, stage changed, or message sent, project onto matching CRM opportunity / customer
     if (event === 'delivery.stage_changed' && payload.new_stage) {
       if (matchingOpp) {
         await crmService.updateOpportunity(matchingOpp.opportunity_id, {
           delivery_stage: payload.new_stage,
         });
+      }
 
+      if (targetCustomerId) {
         // Broadcast timeline event into unified stream
         const tlColl = deliveryConn.db.collection('timelineevents');
         const crypto = require('crypto');
         await tlColl.insertOne({
           event_id: `EVT-${crypto.randomUUID()}`,
-          customer_id: matchingOpp.customer_id,
-          opportunity_id: matchingOpp.opportunity_id,
+          customer_id: targetCustomerId,
+          opportunity_id: matchingOpp?.opportunity_id || null,
           type: 'delivery_stage_change',
           title: `Delivery Stage Updated: ${payload.new_stage}`,
           content: `Vehicle handover stage transitioned to ${payload.new_stage} in Delivery Centre.`,
@@ -352,18 +418,19 @@ router.post('/delivery', async (req, res, next) => {
           updatedAt: new Date(),
         });
       }
-    } else if (event === 'delivery.comment_added' && payload.comment) {
-      if (matchingOpp) {
+    } else if (event === 'delivery.comment_added' && (payload.comment || payload.body)) {
+      const commentText = payload.comment || payload.body;
+      if (targetCustomerId) {
         const tlColl = deliveryConn.db.collection('timelineevents');
         const crypto = require('crypto');
         await tlColl.insertOne({
           event_id: `EVT-${crypto.randomUUID()}`,
-          customer_id: matchingOpp.customer_id,
-          opportunity_id: matchingOpp.opportunity_id,
+          customer_id: targetCustomerId,
+          opportunity_id: matchingOpp?.opportunity_id || null,
           type: 'note',
           title: 'Delivery Handover Note',
-          content: payload.comment,
-          author: payload.author || 'Delivery Centre',
+          content: commentText,
+          author: payload.author || payload.author_name || 'Delivery Centre',
           source: 'Delivery Centre',
           occurred_at: new Date(),
           timestamp_aest: new Date().toLocaleString('en-AU', { timeZone: 'Australia/Melbourne' }) + ' AEST',

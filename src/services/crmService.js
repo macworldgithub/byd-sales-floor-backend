@@ -627,6 +627,45 @@ const crmService = {
     return { success: true, event_id: eventId, deleted: true };
   },
 
+  async addTimelineEmail(customerId, emailData = {}) {
+    await ensureDbConnected();
+    const tlColl = deliveryConn.db.collection('timelineevents');
+    const custColl = deliveryConn.db.collection('customers');
+    const customer = await custColl.findOne({ customer_id: customerId });
+    if (!customer) throw new Error('Customer not found');
+
+    const now = new Date();
+    const eventId = `EVT-EML-${Date.now().toString(36).toUpperCase()}-${Math.floor(Math.random() * 1000)}`;
+    const newEvent = {
+      event_id: eventId,
+      customer_id: customerId,
+      type: 'email',
+      event_type: 'email',
+      title: emailData.subject || 'Customer Email Communication',
+      content: emailData.body || emailData.content || '',
+      body: emailData.body || emailData.content || '',
+      author: emailData.author || emailData.sender || 'Sales Consultant',
+      author_name: emailData.author || emailData.sender || 'Sales Consultant',
+      source: 'Sales CRM',
+      source_system: 'crm',
+      metadata: {
+        to: emailData.to || customer.email,
+        from: emailData.from || 'sales@bydfairfield.com.au',
+        subject: emailData.subject || '',
+        direction: emailData.direction || 'outbound',
+      },
+      timestamp: now,
+      occurred_at: now,
+      timestamp_aest: formatAEST(now),
+      visibility: 'internal',
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    await tlColl.insertOne(newEvent);
+    return newEvent;
+  },
+
   // ─── 3. Opportunities & 3-Way Mark Sold Orchestration (§7.5, AC-7) ─────────
   async getOpportunities(filter = {}) {
     await ensureDbConnected();

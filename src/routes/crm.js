@@ -187,6 +187,18 @@ router.delete('/customers/:id/notes/:noteId', async (req, res, next) => {
   }
 });
 
+router.post('/customers/:id/emails', async (req, res, next) => {
+  try {
+    const email = await crmService.addTimelineEmail(req.params.id, {
+      ...req.body,
+      author: req.body.author || req.user?.name || 'Sales Consultant',
+    });
+    res.status(201).json({ success: true, message: 'Email logged to unified timeline', data: email });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // ─── 3. Opportunities & Deals Pipeline (§5.4) ───────────────────────────────
 router.get('/opportunities/export-csv', async (req, res, next) => {
   try {
