@@ -3456,8 +3456,15 @@ const crmService = {
     const apptColl = leadConn.db.collection('appointments');
     const filter = {};
 
-    if (query.site && query.site !== 'All' && query.site !== 'All Sites') {
-      filter.$or = [{ site: query.site }, { dealership: query.site }, { location: { $regex: query.site, $options: 'i' } }];
+    const locVal = query.location || query.yard || query.site || query.dealership;
+    if (locVal && locVal !== 'All' && locVal !== 'All Sites' && locVal !== 'All Locations' && locVal !== 'All Yards') {
+      filter.$or = [
+        { site: { $regex: locVal, $options: 'i' } },
+        { dealership: { $regex: locVal, $options: 'i' } },
+        { location: { $regex: locVal, $options: 'i' } },
+        { yard: { $regex: locVal, $options: 'i' } },
+        { 'vehicle.yard': { $regex: locVal, $options: 'i' } },
+      ];
     }
     if (query.consultantName) {
       filter.consultantName = { $regex: query.consultantName, $options: 'i' };
@@ -3470,6 +3477,28 @@ const crmService = {
     }
     if (query.customer_id) {
       filter.customer_id = query.customer_id;
+    }
+
+    if (query.q || query.search) {
+      const qStr = String(query.q || query.search).trim();
+      if (qStr) {
+        const qRegex = { $regex: qStr, $options: 'i' };
+        const searchConditions = [
+          { prospectName: qRegex },
+          { customer_name: qRegex },
+          { phone: qRegex },
+          { email: qRegex },
+          { vehicle: qRegex },
+          { 'vehicle.raw': qRegex },
+          { 'vehicle.model': qRegex },
+        ];
+        if (filter.$or) {
+          filter.$and = [{ $or: filter.$or }, { $or: searchConditions }];
+          delete filter.$or;
+        } else {
+          filter.$or = searchConditions;
+        }
+      }
     }
 
     const sort = { when: 1, createdAt: -1 };

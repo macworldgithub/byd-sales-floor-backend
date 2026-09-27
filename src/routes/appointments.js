@@ -44,9 +44,20 @@ router.get('/', async (req, res, next) => {
       filter.consultantName = { $regex: consultantName, $options: 'i' };
     }
 
-    if (status) filter.status = status;
-    if (type) filter.type = type;
+    if (status && status !== 'All') filter.status = status;
+    if (type && type !== 'All') filter.type = type;
     if (leadId) filter.leadId = leadId;
+
+    const locVal = req.query.location || req.query.yard || req.query.site || req.query.dealership;
+    if (locVal && locVal !== 'All' && locVal !== 'All Locations' && locVal !== 'All Yards' && locVal !== 'All Sites') {
+      filter.$or = [
+        { dealership: { $regex: locVal, $options: 'i' } },
+        { location: { $regex: locVal, $options: 'i' } },
+        { site: { $regex: locVal, $options: 'i' } },
+        { yard: { $regex: locVal, $options: 'i' } },
+        { 'vehicle.yard': { $regex: locVal, $options: 'i' } },
+      ];
+    }
 
     if (from || to) {
       filter.when = {};
