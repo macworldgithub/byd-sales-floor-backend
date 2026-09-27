@@ -70,6 +70,8 @@ router.get('/', async (req, res, next) => {
   }
 });
 
+const { deliveryConn } = require('../db');
+
 // ─── POST /api/appointments ─────────────────────────────────────────────────
 router.post(
   '/',
@@ -101,6 +103,53 @@ router.post(
         });
         await audit(req, appointment.leadId, `Appointment created: ${appointment.type} on ${appointment.when}`);
       }
+
+      // Direct CRM database update (§5.2, §6.1, §7.3)
+      try {
+        const custColl = deliveryConn.db.collection('customers');
+        const oppColl = deliveryConn.db.collection('opportunities');
+        const tlColl = deliveryConn.db.collection('timelineevents');
+        const now = new Date();
+
+        const last8 = appointment.phone ? String(appointment.phone).slice(-8) : '';
+        const cust = await custColl.findOne({
+          $or: [
+            appointment.leadId ? { lead_prospect_id: String(appointment.leadId) } : null,
+            last8 ? { phone: { $regex: last8, $options: 'i' } } : null,
+          ].filter(Boolean),
+        });
+
+        if (cust) {
+          await oppColl.updateMany(
+            { customer_id: cust.customer_id, stage: { $in: ['New / Allocated', 'Working'] } },
+            {
+              $set: {
+                stage: 'Appointment',
+                next_action_at: new Date(appointment.when),
+                next_action_desc: `${appointment.type} (${appointment.vehicle || 'BYD'})`,
+                updatedAt: now,
+              },
+            }
+          );
+        }
+
+        await tlColl.insertOne({
+          event_id: 'EVT-' + Math.random().toString(36).substring(2, 9).toUpperCase(),
+          customer_id: cust?.customer_id || `CUST-APPT-${appointment._id}`,
+          type: 'appointment',
+          event_type: 'appointment',
+          title: `Appointment Booked: ${appointment.type}`,
+          content: `${appointment.type} booked for ${appointment.prospectName} (${appointment.vehicle || 'BYD'}) on ${appointment.when} with ${appointment.consultantName}.`,
+          body: `${appointment.type} booked for ${appointment.prospectName} (${appointment.vehicle || 'BYD'}) on ${appointment.when} with ${appointment.consultantName}.`,
+          author: appointment.consultantName,
+          source: 'Sales Floor Calendar',
+          source_system: 'calendar',
+          occurred_at: now,
+          visibility: 'internal',
+          createdAt: now,
+          updatedAt: now,
+        });
+      } catch (_) {}
 
       return res.status(201).json({ success: true, data: appointment });
     } catch (err) {

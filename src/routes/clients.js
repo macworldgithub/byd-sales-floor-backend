@@ -107,6 +107,8 @@ router.get('/', async (req, res, next) => {
   }
 });
 
+const { deliveryConn, leadConn } = require('../db');
+
 // ─── POST /api/clients ──────────────────────────────────────────────────────
 router.post(
   '/',
@@ -124,6 +126,55 @@ router.post(
 
       const client = await Client.create(req.body);
       await audit(req, client._id.toString(), 'client.create');
+
+      // Direct CRM customer & opportunity link
+      try {
+        const custColl = deliveryConn.db.collection('customers');
+        const oppColl = deliveryConn.db.collection('opportunities');
+        const tlColl = deliveryConn.db.collection('timelineevents');
+        const now = new Date();
+
+        let cleanPhone = client.phone ? String(client.phone).replace(/\D/g, '') : '';
+        if (cleanPhone.startsWith('61')) cleanPhone = '+' + cleanPhone;
+        else if (cleanPhone.startsWith('0')) cleanPhone = '+61' + cleanPhone.slice(1);
+        else if (cleanPhone) cleanPhone = '+' + cleanPhone;
+
+        let customer = await custColl.findOne({
+          $or: [
+            cleanPhone ? { phone: cleanPhone } : null,
+            client.email ? { email: client.email.toLowerCase() } : null,
+          ].filter(Boolean),
+        });
+
+        if (customer) {
+          await custColl.updateOne(
+            { customer_id: customer.customer_id },
+            { $set: { delivery_client_id: String(client._id), updatedAt: now } }
+          );
+          await oppColl.updateMany(
+            { customer_id: customer.customer_id },
+            { $set: { delivery_client_id: String(client._id), delivery_stage: client.stage || 'Scheduled', updatedAt: now } }
+          );
+        }
+
+        await tlColl.insertOne({
+          event_id: 'EVT-' + Math.random().toString(36).substring(2, 9).toUpperCase(),
+          customer_id: customer?.customer_id || `CUST-DEL-${client._id}`,
+          type: 'delivery_stage_change',
+          event_type: 'delivery_stage_change',
+          title: `Delivery Handover Scheduled: ${client.stage || 'Scheduled'}`,
+          content: `Delivery record created for ${client.name}. Vehicle: ${client.vehicle} (VIN: ${client.vin || 'Pending'}). Salesperson: ${client.salesperson || 'Unassigned'}.`,
+          body: `Delivery record created for ${client.name}. Vehicle: ${client.vehicle} (VIN: ${client.vin || 'Pending'}). Salesperson: ${client.salesperson || 'Unassigned'}.`,
+          author: req.user.name || req.user.email,
+          source: 'Delivery Centre',
+          source_system: 'delivery',
+          occurred_at: now,
+          visibility: 'internal',
+          createdAt: now,
+          updatedAt: now,
+        });
+      } catch (_) {}
+
       return res.status(201).json({ success: true, data: client });
     } catch (err) {
       next(err);
@@ -156,13 +207,76 @@ router.patch('/:id', async (req, res, next) => {
       delete req.body.vin;
     }
 
+    const previousClient = await Client.findById(req.params.id);
+    if (!previousClient) return res.status(404).json({ success: false, message: 'Client not found.' });
+
     const client = await Client.findByIdAndUpdate(
       req.params.id,
       { $set: req.body },
       { new: true, runValidators: true }
     );
-    if (!client) return res.status(404).json({ success: false, message: 'Client not found.' });
     await audit(req, req.params.id, 'client.update', { fields: Object.keys(req.body) });
+
+    // Direct database sync to CRM Opportunity & TimelineEvents (§5.5, §5.8, AC-9)
+    try {
+      const oppColl = deliveryConn.db.collection('opportunities');
+      const custColl = deliveryConn.db.collection('customers');
+      const tlColl = deliveryConn.db.collection('timelineevents');
+      const now = new Date();
+
+      const oppUpdates = { updatedAt: now };
+      if (req.body.stage) oppUpdates.delivery_stage = req.body.stage;
+      if (req.body.salesperson) oppUpdates.owner_name = req.body.salesperson;
+      if (req.body.delivery_date) oppUpdates.delivery_date = req.body.delivery_date;
+
+      await oppColl.updateMany(
+        { $or: [{ delivery_client_id: String(req.params.id) }, { customer_phone: client.phone }] },
+        { $set: oppUpdates }
+      );
+
+      const cust = await custColl.findOne({
+        $or: [{ delivery_client_id: String(req.params.id) }, { phone: client.phone }],
+      });
+
+      if (req.body.stage && req.body.stage !== previousClient.stage) {
+        await tlColl.insertOne({
+          event_id: 'EVT-' + Math.random().toString(36).substring(2, 9).toUpperCase(),
+          customer_id: cust?.customer_id || `CUST-DEL-${client._id}`,
+          type: 'delivery_stage_change',
+          event_type: 'delivery_stage_change',
+          title: `Delivery Stage Transitioned: ${req.body.stage}`,
+          content: `Delivery stage moved from '${previousClient.stage}' to '${req.body.stage}' by ${req.user.name || req.user.email}.`,
+          body: `Delivery stage moved from '${previousClient.stage}' to '${req.body.stage}' by ${req.user.name || req.user.email}.`,
+          author: req.user.name || req.user.email,
+          source: 'Delivery Centre',
+          source_system: 'delivery',
+          occurred_at: now,
+          visibility: 'internal',
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
+
+      if (req.body.delivery_date && req.body.delivery_date !== previousClient.delivery_date) {
+        await tlColl.insertOne({
+          event_id: 'EVT-' + Math.random().toString(36).substring(2, 9).toUpperCase(),
+          customer_id: cust?.customer_id || `CUST-DEL-${client._id}`,
+          type: 'delivery_date_change',
+          event_type: 'delivery_date_change',
+          title: `Delivery Date Updated: ${req.body.delivery_date}`,
+          content: `Handover date rescheduled from '${previousClient.delivery_date || 'Unset'}' to '${req.body.delivery_date}'.`,
+          body: `Handover date rescheduled from '${previousClient.delivery_date || 'Unset'}' to '${req.body.delivery_date}'.`,
+          author: req.user.name || req.user.email,
+          source: 'Delivery Centre',
+          source_system: 'delivery',
+          occurred_at: now,
+          visibility: 'internal',
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
+    } catch (_) {}
+
     return res.json({ success: true, data: client });
   } catch (err) {
     next(err);
@@ -196,16 +310,60 @@ router.post(
       const client = await Client.findById(req.params.id);
       if (!client) return res.status(404).json({ success: false, message: 'Client not found.' });
 
+      const now = new Date();
+      const authorName = req.user.name || req.user.email;
       const comment = {
         author_id: req.user.id,
-        author_name: req.user.name || req.user.email,
+        author_name: authorName,
         body: req.body.body,
-        created_at: new Date(),
+        created_at: now,
       };
 
       client.comments.push(comment);
       await client.save();
       await audit(req, req.params.id, 'client.comment.add');
+
+      // Direct write into unified CRM timeline & Lead Centre database (AC-3)
+      try {
+        const custColl = deliveryConn.db.collection('customers');
+        const tlColl = deliveryConn.db.collection('timelineevents');
+        const leadColl = leadConn.db.collection('leads');
+        const last8 = client.phone ? String(client.phone).slice(-8) : '';
+
+        const cust = await custColl.findOne({
+          $or: [{ delivery_client_id: String(req.params.id) }, last8 ? { phone: { $regex: last8, $options: 'i' } } : null].filter(Boolean),
+        });
+
+        await tlColl.insertOne({
+          event_id: 'EVT-' + Math.random().toString(36).substring(2, 9).toUpperCase(),
+          customer_id: cust?.customer_id || `CUST-DEL-${client._id}`,
+          type: 'note',
+          event_type: 'note',
+          title: 'Delivery Centre Comment',
+          content: req.body.body,
+          body: req.body.body,
+          author: authorName,
+          source: 'Delivery Centre',
+          source_system: 'delivery',
+          occurred_at: now,
+          visibility: 'internal',
+          createdAt: now,
+          updatedAt: now,
+        });
+
+        if (last8) {
+          const matchedLead = await leadColl.findOne({ phone: { $regex: last8, $options: 'i' } });
+          if (matchedLead) {
+            const timestampIso = now.toISOString();
+            const noteEntry = `[${timestampIso}] ${authorName} (Delivery Centre): ${req.body.body}`;
+            const updatedNotes = matchedLead.notes ? `${matchedLead.notes}\n${noteEntry}` : noteEntry;
+            await leadColl.updateOne(
+              { _id: matchedLead._id },
+              { $set: { notes: updatedNotes, lastTouch: `Delivery comment · Just now`, lastActivityAt: now, updatedAt: now } }
+            );
+          }
+        }
+      } catch (_) {}
 
       const addedComment = client.comments[client.comments.length - 1];
       return res.status(201).json({ success: true, data: addedComment });

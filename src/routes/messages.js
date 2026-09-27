@@ -157,6 +157,35 @@ router.post(
         });
       }
 
+      // Direct write to unified CRM timeline (§5.2, §5.7)
+      try {
+        const { deliveryConn } = require('../db');
+        const custColl = deliveryConn.db.collection('customers');
+        const tlColl = deliveryConn.db.collection('timelineevents');
+        const last8 = normalizedPhone.slice(-8);
+
+        const cust = await custColl.findOne({
+          $or: [client_id ? { delivery_client_id: String(client_id) } : null, last8 ? { phone: { $regex: last8, $options: 'i' } } : null].filter(Boolean),
+        });
+
+        await tlColl.insertOne({
+          event_id: 'EVT-' + Math.random().toString(36).substring(2, 9).toUpperCase(),
+          customer_id: cust?.customer_id || `CUST-SMS-${message._id}`,
+          type: 'sms',
+          event_type: 'sms',
+          title: 'Outbound Customer SMS Sent',
+          content: msgBody,
+          body: msgBody,
+          author: req.user.name || req.user.email,
+          source: 'Sales Floor / MobileMessage',
+          source_system: 'sms',
+          occurred_at: new Date(),
+          visibility: 'customer',
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+      } catch (_) {}
+
       return res.status(201).json({
         success: true,
         data: message,

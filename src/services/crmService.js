@@ -5,7 +5,6 @@
  *   leadConn     → inventories (865 BYD vehicles), leads (4,036 prospects), conversations
  */
 const { deliveryConn, leadConn, ensureDbConnected } = require('../db');
-const webhookDispatcher = require('./webhookDispatcher');
 
 function formatPhoneE164(phone) {
   if (!phone) return '';
@@ -255,23 +254,58 @@ const crmService = {
   async updateCustomer(id, patch) {
     await ensureDbConnected();
     const collection = deliveryConn.db.collection('customers');
+    const clientColl = deliveryConn.db.collection('clients');
+    const leadColl = leadConn.db.collection('leads');
+    const convColl = leadConn.db.collection('conversations');
+    const tlColl = deliveryConn.db.collection('timelineevents');
 
-    // If opt-out changed, handle ACMA global opt-out fanout (§5.10, AC-5)
-    if (patch.do_not_contact !== undefined) {
-      if (patch.do_not_contact) {
+    const targetCust = await collection.findOne({ customer_id: id });
+    if (!targetCust) throw new Error('Customer not found');
+
+    // If opt-out changed, handle ACMA global opt-out fanout across both databases (§5.10, AC-5)
+    if (patch.do_not_contact !== undefined || patch.consent_sms === false) {
+      if (patch.do_not_contact || patch.consent_sms === false) {
+        patch.do_not_contact = true;
         patch.consent_sms = false;
         patch.consent_updated_at = new Date();
 
-        // Write-back to Lead Centre so AI SMS halts immediately (AC-5)
-        const targetCust = await collection.findOne({ customer_id: id });
-        if (targetCust?.phone) {
-          try {
-            await leadConn.db.collection('leads').updateMany(
-              { phone: { $regex: targetCust.phone.slice(-8), $options: 'i' } },
-              { $set: { status: 'opted out', control: 'Human assisted', tag: 'Opted Out' } }
-            );
-          } catch (_) {}
+        if (targetCust.phone) {
+          const last8 = targetCust.phone.slice(-8);
+          // 1. Direct Delivery Centre database update
+          await clientColl.updateMany(
+            { phone: { $regex: last8, $options: 'i' } },
+            { $set: { opted_out: true, consent_sms: false, updatedAt: new Date() } }
+          ).catch(() => {});
+
+          // 2. Direct Lead Centre database update (stops AI and marks Opted Out)
+          await leadColl.updateMany(
+            { phone: { $regex: last8, $options: 'i' } },
+            { $set: { status: 'opted out', control: 'Human assisted', tag: 'Opted Out', do_not_contact: true, updatedAt: new Date() } }
+          ).catch(() => {});
+
+          await convColl.updateMany(
+            { phone: { $regex: last8, $options: 'i' } },
+            { $set: { status: 'opted_out', control: 'agent', updatedAt: new Date() } }
+          ).catch(() => {});
         }
+
+        // 3. Add TimelineEvent in unified event store
+        await tlColl.insertOne({
+          event_id: 'EVT-' + Math.random().toString(36).substring(2, 9).toUpperCase(),
+          customer_id: id,
+          type: 'system',
+          event_type: 'system',
+          title: 'Customer Opted Out (Global ACMA Suppression Active)',
+          content: 'Customer requested DNC/Opt-Out. Automated SMS in Lead Centre halted and direct SMS messaging suppressed across all databases.',
+          body: 'Customer requested DNC/Opt-Out. Automated SMS in Lead Centre halted and direct SMS messaging suppressed across all databases.',
+          author: patch.updated_by || 'ACMA Compliance Gate',
+          source: 'Sales CRM',
+          occurred_at: new Date(),
+          timestamp_aest: formatAEST(new Date()),
+          visibility: 'internal',
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        }).catch(() => {});
       }
     }
 
@@ -486,7 +520,7 @@ const crmService = {
     await tlColl.insertOne(newEvent);
 
     // FANOUT TO DELIVERY CENTRE CLIENT COMMENTS (§5.2 & AC-2)
-    // "a note typed in CRM is visible on the Delivery Centre client within 15 seconds"
+    // Direct write to Delivery Centre MongoDB database
     if (customer.phone) {
       try {
         await clientColl.updateOne(
@@ -504,17 +538,38 @@ const crmService = {
       } catch (_) {}
     }
 
-    // Outbound webhook (§7.3 & §7.4): crm.note_added
-    await webhookDispatcher.emit(
-      'crm.note_added',
-      {
-        customer_id: customerId,
-        event_id: eventId,
-        content: newEvent.content,
-        author: newEvent.author,
-      },
-      { customer_id: customerId, phone: customer.phone, email: customer.email, name: customer.name }
-    ).catch(() => {});
+    // FANOUT TO LEAD CENTRE DATABASE (Notes, LastTouch, AuditTrail)
+    if (customer.phone || customer.lead_prospect_id) {
+      try {
+        const leadQuery = customer.lead_prospect_id
+          ? { $or: [{ _id: customer.lead_prospect_id }, { phone: { $regex: customer.phone.slice(-8), $options: 'i' } }] }
+          : { phone: { $regex: customer.phone.slice(-8), $options: 'i' } };
+        const matchedLead = await leadConn.db.collection('leads').findOne(leadQuery);
+        if (matchedLead) {
+          const timestampIso = now.toISOString();
+          const noteEntry = `[${timestampIso}] ${newEvent.author} (Sales CRM): ${newEvent.content}`;
+          const updatedNotes = matchedLead.notes ? `${matchedLead.notes}\n${noteEntry}` : noteEntry;
+          await leadConn.db.collection('leads').updateOne(
+            { _id: matchedLead._id },
+            {
+              $set: {
+                notes: updatedNotes,
+                lastTouch: `Note from ${newEvent.author} · Just now`,
+                lastActivityAt: now,
+                updatedAt: now,
+              },
+            }
+          );
+          await leadConn.db.collection('audittrails').insertOne({
+            message: `Note added from Sales CRM: ${newEvent.content.substring(0, 80)}`,
+            actor: newEvent.author,
+            leadId: matchedLead._id,
+            action: 'note',
+            createdAt: now,
+          }).catch(() => {});
+        }
+      } catch (_) {}
+    }
 
     return newEvent;
   },
@@ -820,24 +875,57 @@ const crmService = {
         updatedAt: now,
       });
 
-      // Outbound webhook dispatch: crm.stage_changed (§7.3 & §7.4)
-      await webhookDispatcher.emit('crm.stage_changed', {
-        opportunity_id: existing.opportunity_id,
-        customer_id: existing.customer_id,
-        previous_stage: existing.stage,
-        new_stage: patch.stage,
-        loss_reason: patch.loss_reason || null,
-      }, { customer_id: existing.customer_id, phone: existing.customer_phone, email: existing.customer_email }).catch(() => {});
+      // Directly update matching Lead in Lead Centre database
+      if (existing.customer_phone || existing.customer_id) {
+        try {
+          const stageMap = {
+            'New / Allocated': 'NEW ENQUIRIES',
+            'Working': 'QUALIFIED',
+            'Appointment': 'TEST DRIVE BOOKED',
+            'Negotiation': 'NEGOTIATION',
+            'Written / Sold': 'Sold',
+            'Delivered / Won': 'Delivered',
+            'Lost / Parked': 'Lost',
+          };
+          const leadStage = stageMap[patch.stage] || patch.stage;
+          const leadUpdate = {
+            stage: leadStage,
+            lastTouch: `Stage moved to ${patch.stage}`,
+            lastActivityAt: now,
+            updatedAt: now,
+          };
+          if (patch.stage === 'Lost / Parked') {
+            leadUpdate.status = 'Lost';
+            leadUpdate.lossReason = patch.loss_reason || 'Lost deal in CRM';
+          }
+          await leadConn.db.collection('leads').updateMany(
+            { phone: { $regex: existing.customer_phone.slice(-8), $options: 'i' } },
+            { $set: leadUpdate }
+          );
+          await leadConn.db.collection('audittrails').insertOne({
+            message: `Lead stage updated to ${leadStage} via Sales CRM`,
+            actor: patch.updated_by || 'Sales Consultant',
+            action: 'stage_change',
+            createdAt: now,
+          }).catch(() => {});
+        } catch (_) {}
+      }
     }
 
-    // Owner change outbound dispatch: crm.owner_changed (§7.3)
+    // Direct database update for owner assignment change across Lead & Delivery Centres
     if (patch.owner_name && patch.owner_name !== existing.owner_name) {
-      await webhookDispatcher.emit('crm.owner_changed', {
-        opportunity_id: existing.opportunity_id,
-        customer_id: existing.customer_id,
-        previous_owner: existing.owner_name,
-        new_owner: patch.owner_name,
-      }, { customer_id: existing.customer_id, phone: existing.customer_phone, email: existing.customer_email }).catch(() => {});
+      if (existing.customer_phone) {
+        try {
+          await leadConn.db.collection('leads').updateMany(
+            { phone: { $regex: existing.customer_phone.slice(-8), $options: 'i' } },
+            { $set: { allocatedPersonFullName: patch.owner_name, assignedTo: patch.owner_email || patch.owner_name, updatedAt: new Date() } }
+          );
+          await deliveryConn.db.collection('clients').updateMany(
+            { phone: { $regex: existing.customer_phone.slice(-8), $options: 'i' } },
+            { $set: { salesperson: patch.owner_name, updatedAt: new Date() } }
+          );
+        } catch (_) {}
+      }
     }
 
     return this.getOpportunityById(existing.opportunity_id);
@@ -1076,23 +1164,33 @@ const crmService = {
       updatedAt: now,
     });
 
-    // Outbound webhook dispatch: crm.deal_sold (§7.3 & §7.4)
-    await webhookDispatcher.emit(
-      'crm.deal_sold',
-      {
-        opportunity_id: opp.opportunity_id,
-        customer_id: customer.customer_id,
-        sales_log_id: salesLogId,
-        vy_order_id: vyOrderId,
-        delivery_client_id: deliveryClientId,
-        vehicle: vehicleDescriptor,
-        sale_type: saleType,
-        primary_salesperson: primarySalesperson,
-        total_price: opp.total_price || opp.list_price,
-        delivery_sync_success: deliverySyncSuccess,
-      },
-      { customer_id: customer.customer_id, phone: customer.phone, email: customer.email, name: customer.name }
-    ).catch(() => {});
+    // Direct Lead Centre database update (Mark Sold in Lead Centre)
+    if (customer.phone || opp.lead_prospect_id) {
+      try {
+        const leadQuery = opp.lead_prospect_id
+          ? { $or: [{ _id: opp.lead_prospect_id }, { phone: { $regex: customer.phone.slice(-8), $options: 'i' } }] }
+          : { phone: { $regex: customer.phone.slice(-8), $options: 'i' } };
+        await leadConn.db.collection('leads').updateMany(
+          leadQuery,
+          {
+            $set: {
+              stage: 'Sold',
+              status: 'Sold',
+              lastTouch: `Marked Sold by ${primarySalesperson}`,
+              lastActivityAt: now,
+              'leadStats.closedWon': true,
+              updatedAt: now,
+            },
+          }
+        );
+        await leadConn.db.collection('audittrails').insertOne({
+          message: `Deal Written & Sold by ${primarySalesperson}. VY Order: ${vyOrderId}, Sales Log: ${salesLogId}, Delivery Client: ${deliveryClientId || 'Pending'}`,
+          actor: primarySalesperson,
+          action: 'sold',
+          createdAt: now,
+        }).catch(() => {});
+      } catch (_) {}
+    }
 
     return {
       opportunity: await this.getOpportunityById(opp.opportunity_id),
@@ -1371,15 +1469,225 @@ const crmService = {
       });
     }
 
-    // Outbound webhook dispatch: crm.allocation_created (§7.3)
-    await webhookDispatcher.emit('crm.allocation_created', {
-      allocation_id: allocationId,
-      customer_id: customer?.customer_id,
-      assigned_to: allocDoc.assigned_to_name,
-      sla_expires_at: slaExpiresAt,
-    }, { customer_id: customer?.customer_id, phone: allocDoc.phone, email: allocDoc.email, name: allocDoc.prospect_name }).catch(() => {});
+    // Direct Lead Centre database update (Allocate in Lead Centre)
+    if (allocDoc.phone || data.lead_prospect_id) {
+      try {
+        const leadQuery = data.lead_prospect_id
+          ? { $or: [{ _id: data.lead_prospect_id }, { phone: { $regex: allocDoc.phone.slice(-8), $options: 'i' } }] }
+          : { phone: { $regex: allocDoc.phone.slice(-8), $options: 'i' } };
+        const existingLead = await leadConn.db.collection('leads').findOne(leadQuery);
+        if (existingLead) {
+          await leadConn.db.collection('leads').updateOne(
+            { _id: existingLead._id },
+            {
+              $set: {
+                assignedTo: allocDoc.assigned_to_name,
+                allocatedPersonFullName: allocDoc.assigned_to_name,
+                dealer: allocDoc.site,
+                stage: 'QUALIFIED',
+                lastTouch: `Allocated to ${allocDoc.assigned_to_name} (15m SLA)`,
+                lastActivityAt: now,
+                updatedAt: now,
+              },
+            }
+          );
+          await leadConn.db.collection('audittrails').insertOne({
+            message: `Lead allocated to ${allocDoc.assigned_to_name} with 15-min SLA clock`,
+            actor: 'Lead Intake Engine',
+            leadId: existingLead._id,
+            action: 'allocate',
+            createdAt: now,
+          }).catch(() => {});
+        } else {
+          await leadConn.db.collection('leads').insertOne({
+            name: allocDoc.prospect_name,
+            phone: allocDoc.phone,
+            email: allocDoc.email,
+            vehicle: data.vehicle || 'BYD SEALION 7',
+            source: data.source || 'Autogate',
+            platform: data.source === 'Autogate' ? 'autogate' : 'manual',
+            stage: 'QUALIFIED',
+            status: 'Assigned',
+            score: data.score || 85,
+            dealer: allocDoc.site,
+            assignedTo: allocDoc.assigned_to_name,
+            allocatedPersonFullName: allocDoc.assigned_to_name,
+            lastTouch: `Allocated to ${allocDoc.assigned_to_name} · Just now`,
+            lastActivityAt: now,
+            notes: allocDoc.notes,
+            isArchived: false,
+            createdAt: now,
+            updatedAt: now,
+          });
+        }
+      } catch (_) {}
+    }
 
     return allocDoc;
+  },
+
+  async acceptAllocation(allocId, consultantName = 'Alex Rivers') {
+    await ensureDbConnected();
+    const allocColl = deliveryConn.db.collection('allocations');
+    const custColl = deliveryConn.db.collection('customers');
+    const oppColl = deliveryConn.db.collection('opportunities');
+    const tlColl = deliveryConn.db.collection('timelineevents');
+    const now = new Date();
+
+    const alloc = await allocColl.findOne({
+      $or: [{ allocation_id: allocId }, { _id: allocId }],
+    });
+    if (!alloc) throw new Error('Allocation not found');
+
+    await allocColl.updateOne(
+      { _id: alloc._id },
+      {
+        $set: {
+          status: 'accepted',
+          accepted_at: now,
+          assigned_to_name: consultantName,
+          updatedAt: now,
+        },
+      }
+    );
+
+    if (alloc.customer_id) {
+      await custColl.updateOne(
+        { customer_id: alloc.customer_id },
+        { $set: { owner_name: consultantName, updatedAt: now } }
+      );
+      await oppColl.updateMany(
+        { customer_id: alloc.customer_id, stage: 'New / Allocated' },
+        { $set: { owner_name: consultantName, stage: 'Working', next_action_desc: 'Initial customer discovery contact', updatedAt: now } }
+      );
+
+      await tlColl.insertOne({
+        event_id: 'EVT-' + Math.random().toString(36).substring(2, 9).toUpperCase(),
+        customer_id: alloc.customer_id,
+        type: 'assignment',
+        event_type: 'assignment',
+        title: 'Allocation SLA Accepted',
+        content: `Accepted by ${consultantName}. Deal transitioned to 'Working' stage.`,
+        body: `Accepted by ${consultantName}. Deal transitioned to 'Working' stage.`,
+        author: consultantName,
+        source: 'Sales CRM',
+        timestamp: now,
+        occurred_at: now,
+        timestamp_aest: formatAEST(now),
+        visibility: 'internal',
+        createdAt: now,
+        updatedAt: now,
+      });
+
+      // Direct Lead Centre database update
+      if (alloc.phone) {
+        try {
+          await leadConn.db.collection('leads').updateMany(
+            { phone: { $regex: alloc.phone.slice(-8), $options: 'i' } },
+            {
+              $set: {
+                assignedTo: consultantName,
+                allocatedPersonFullName: consultantName,
+                stage: 'QUALIFIED',
+                lastTouch: `Allocation accepted by ${consultantName}`,
+                lastActivityAt: now,
+                updatedAt: now,
+              },
+            }
+          );
+          await leadConn.db.collection('audittrails').insertOne({
+            message: `Allocation SLA accepted by ${consultantName}`,
+            actor: consultantName,
+            action: 'accept_allocation',
+            createdAt: now,
+          }).catch(() => {});
+        } catch (_) {}
+      }
+    }
+
+    return { ...alloc, status: 'accepted', assigned_to_name: consultantName, accepted_at: now };
+  },
+
+  async reassignAllocation(allocId, newConsultant) {
+    await ensureDbConnected();
+    const allocColl = deliveryConn.db.collection('allocations');
+    const custColl = deliveryConn.db.collection('customers');
+    const oppColl = deliveryConn.db.collection('opportunities');
+    const tlColl = deliveryConn.db.collection('timelineevents');
+    const now = new Date();
+
+    const alloc = await allocColl.findOne({
+      $or: [{ allocation_id: allocId }, { _id: allocId }],
+    });
+    if (!alloc) throw new Error('Allocation not found');
+
+    const previousConsultant = alloc.assigned_to_name;
+    await allocColl.updateOne(
+      { _id: alloc._id },
+      {
+        $set: {
+          assigned_to_name: newConsultant,
+          previous_assignee: previousConsultant,
+          reassigned_at: now,
+          updatedAt: now,
+        },
+      }
+    );
+
+    if (alloc.customer_id) {
+      await custColl.updateOne(
+        { customer_id: alloc.customer_id },
+        { $set: { owner_name: newConsultant, updatedAt: now } }
+      );
+      await oppColl.updateMany(
+        { customer_id: alloc.customer_id, stage: { $nin: ['Delivered / Won', 'Lost / Parked'] } },
+        { $set: { owner_name: newConsultant, updatedAt: now } }
+      );
+
+      await tlColl.insertOne({
+        event_id: 'EVT-' + Math.random().toString(36).substring(2, 9).toUpperCase(),
+        customer_id: alloc.customer_id,
+        type: 'assignment',
+        event_type: 'assignment',
+        title: 'Lead Reassigned by Floor Manager',
+        content: `Reassigned from ${previousConsultant} to ${newConsultant}.`,
+        body: `Reassigned from ${previousConsultant} to ${newConsultant}.`,
+        author: 'Floor Manager',
+        source: 'Sales CRM',
+        timestamp: now,
+        occurred_at: now,
+        timestamp_aest: formatAEST(now),
+        visibility: 'internal',
+        createdAt: now,
+        updatedAt: now,
+      });
+
+      // Direct Lead Centre database update
+      if (alloc.phone) {
+        try {
+          await leadConn.db.collection('leads').updateMany(
+            { phone: { $regex: alloc.phone.slice(-8), $options: 'i' } },
+            {
+              $set: {
+                assignedTo: newConsultant,
+                allocatedPersonFullName: newConsultant,
+                lastTouch: `Reassigned to ${newConsultant}`,
+                lastActivityAt: now,
+                updatedAt: now,
+              },
+            }
+          );
+          await leadConn.db.collection('audittrails').insertOne({
+            message: `Lead reassigned from ${previousConsultant} to ${newConsultant}`,
+            actor: 'Floor Manager',
+            action: 'reassign',
+            createdAt: now,
+          }).catch(() => {});
+        } catch (_) {}
+      }
+    }
+
+    return { ...alloc, assigned_to_name: newConsultant, previous_assignee: previousConsultant, reassigned_at: now };
   },
 
   async checkAndEscalateSlas() {
@@ -1522,6 +1830,8 @@ const crmService = {
     await ensureDbConnected();
     const holdsColl = deliveryConn.db.collection('stockholds');
     const oppColl = deliveryConn.db.collection('opportunities');
+    const tlColl = deliveryConn.db.collection('timelineevents');
+    const invColl = leadConn.db.collection('inventories');
 
     const opp = await oppColl.findOne({
       $or: [{ opportunity_id: opportunityId }, { _id: opportunityId }],
@@ -1529,6 +1839,7 @@ const crmService = {
 
     const holdId = 'HOLD-BYD-' + Math.floor(700 + Math.random() * 300);
     const expiresAt = new Date(Date.now() + 48 * 3600000);
+    const now = new Date();
 
     const holdDoc = {
       hold_id: holdId,
@@ -1544,9 +1855,9 @@ const crmService = {
       site: opp?.site || 'Fairfield',
       expires_at: expiresAt,
       status: 'active',
-      held_at: new Date(),
-      createdAt: new Date(),
-      updatedAt: new Date(),
+      held_at: now,
+      createdAt: now,
+      updatedAt: now,
     };
 
     await holdsColl.insertOne(holdDoc);
@@ -1554,9 +1865,47 @@ const crmService = {
     if (opp) {
       await oppColl.updateOne(
         { _id: opp._id },
-        { $set: { vy_stock_id: stockId, updatedAt: new Date() } }
+        { $set: { vy_stock_id: stockId, updatedAt: now } }
       );
+
+      if (opp.customer_id) {
+        await tlColl.insertOne({
+          event_id: 'EVT-' + Math.random().toString(36).substring(2, 9).toUpperCase(),
+          customer_id: opp.customer_id,
+          opportunity_id: opp.opportunity_id,
+          type: 'system',
+          event_type: 'system',
+          title: `Stock Reserved: ${stockId}`,
+          content: `Stock hold placed on ${stockId} (${opp.model || 'BYD'}) for 48 hours by ${consultantName}.`,
+          body: `Stock hold placed on ${stockId} (${opp.model || 'BYD'}) for 48 hours by ${consultantName}.`,
+          author: consultantName,
+          source: 'Sales CRM',
+          occurred_at: now,
+          timestamp_aest: formatAEST(now),
+          visibility: 'internal',
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
     }
+
+    // Direct Lead Centre inventory database update
+    try {
+      await invColl.updateOne(
+        { $or: [{ stock: stockId.replace('VY-VIC-', '') }, { stock: stockId }, { _id: stockId }] },
+        {
+          $set: {
+            status: 'Held',
+            'holdDetails.heldBy': consultantName,
+            'holdDetails.customerName': opp?.customer_name || 'Customer',
+            'holdDetails.expiresAt': expiresAt,
+            'holdDetails.opportunityId': opportunityId,
+            'holdDetails.notes': `Held via Sales Floor CRM by ${consultantName}`,
+            updatedAt: now,
+          },
+        }
+      );
+    } catch (_) {}
 
     return {
       stock_id: stockId,
@@ -1569,10 +1918,25 @@ const crmService = {
   async releaseStock(stockId) {
     await ensureDbConnected();
     const holdsColl = deliveryConn.db.collection('stockholds');
+    const invColl = leadConn.db.collection('inventories');
+    const now = new Date();
+
     await holdsColl.updateMany(
       { vy_stock_id: stockId, status: 'active' },
-      { $set: { status: 'released', release_reason: 'Deal released', updatedAt: new Date() } }
+      { $set: { status: 'released', release_reason: 'Deal released', updatedAt: now } }
     );
+
+    // Direct Lead Centre inventory database update
+    try {
+      await invColl.updateOne(
+        { $or: [{ stock: stockId.replace('VY-VIC-', '') }, { stock: stockId }, { _id: stockId }] },
+        {
+          $set: { status: 'Available', updatedAt: now },
+          $unset: { holdDetails: 1 },
+        }
+      );
+    } catch (_) {}
+
     return { stock_id: stockId, status: 'Available' };
   },
 

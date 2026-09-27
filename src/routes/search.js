@@ -1,16 +1,17 @@
 /**
- * search.js – Global search and duplicate prevention route
+ * search.js – Global search and duplicate prevention route across Lead & Delivery Centres
  */
 const express = require('express');
 const Lead = require('../models/lead/Lead');
 const Client = require('../models/delivery/Client');
 const Appointment = require('../models/lead/Appointment');
+const { deliveryConn } = require('../db');
 const { authenticate } = require('../middleware/auth');
 
 const router = express.Router();
 router.use(authenticate);
 
-// ─── GET /api/search/check-duplicate ──────────────────────────────────────────
+// ─── GET /api/search/check-duplicate (§5.1, §5.4 Duplicate Prevention) ────────
 router.get('/check-duplicate', async (req, res, next) => {
   try {
     const { phone, email } = req.query;
@@ -31,20 +32,24 @@ router.get('/check-duplicate', async (req, res, next) => {
       return res.json({ success: true, duplicate: false });
     }
 
-    const [existingLead, existingClient] = await Promise.all([
-      Lead.findOne({ $or: conditions, isArchived: { $ne: true } }).lean(),
-      Client.findOne({ $or: conditions }).lean(),
+    const custColl = deliveryConn.db.collection('customers');
+
+    const [existingLead, existingClient, existingCustomer] = await Promise.all([
+      Lead.findOne({ $or: conditions, isArchived: { $ne: true } }).lean().catch(() => null),
+      Client.findOne({ $or: conditions }).lean().catch(() => null),
+      custColl.findOne({ $or: conditions, is_merged: { $ne: true } }).catch(() => null),
     ]);
 
-    if (existingLead || existingClient) {
+    if (existingLead || existingClient || existingCustomer) {
+      const matchedRecord = existingCustomer || existingLead || existingClient;
+      const matchType = existingCustomer ? 'customer' : existingLead ? 'lead' : 'client';
       return res.json({
         success: true,
         duplicate: true,
-        matchType: existingLead ? 'lead' : 'client',
-        matchRecord: existingLead || existingClient,
-        message: `Existing ${existingLead ? 'lead' : 'delivery client'} found: ${
-          (existingLead || existingClient).name
-        }`,
+        matchType,
+        matchRecord,
+        customer_id: existingCustomer?.customer_id || null,
+        message: `Existing ${matchType} found: ${matchedRecord.name} (${matchedRecord.phone || matchedRecord.email || ''})`,
       });
     }
 
@@ -54,12 +59,12 @@ router.get('/check-duplicate', async (req, res, next) => {
   }
 });
 
-// ─── GET /api/search ──────────────────────────────────────────────────────────
+// ─── GET /api/search (§5.11 Global Search) ──────────────────────────────────
 router.get('/', async (req, res, next) => {
   try {
     const { q } = req.query;
     if (!q || q.length < 2) {
-      return res.json({ success: true, data: { leads: [], clients: [], appointments: [] } });
+      return res.json({ success: true, data: { leads: [], clients: [], appointments: [], customers: [], opportunities: [] } });
     }
 
     const regex = new RegExp(q, 'i');
@@ -108,15 +113,42 @@ router.get('/', async (req, res, next) => {
       apptFilter.consultantName = nameRegex;
     }
 
-    const [leads, clients, appointments] = await Promise.all([
-      Lead.find(leadFilter).limit(15).lean(),
-      Client.find(clientFilter).limit(15).lean(),
-      Appointment.find(apptFilter).limit(10).lean(),
+    const custColl = deliveryConn.db.collection('customers');
+    const oppColl = deliveryConn.db.collection('opportunities');
+
+    const custFilter = {
+      $or: [
+        { name: regex },
+        { phone: regex },
+        { email: regex },
+        { customer_id: regex },
+        { preferred_model: regex },
+      ],
+      is_merged: { $ne: true },
+    };
+
+    const oppFilter = {
+      $or: [
+        { customer_name: regex },
+        { vehicle_descriptor: regex },
+        { vin: regex },
+        { vy_order_id: regex },
+        { vy_stock_id: regex },
+        { opportunity_id: regex },
+      ],
+    };
+
+    const [leads, clients, appointments, customers, opportunities] = await Promise.all([
+      Lead.find(leadFilter).limit(15).lean().catch(() => []),
+      Client.find(clientFilter).limit(15).lean().catch(() => []),
+      Appointment.find(apptFilter).limit(10).lean().catch(() => []),
+      custColl.find(custFilter).limit(15).toArray().catch(() => []),
+      oppColl.find(oppFilter).limit(15).toArray().catch(() => []),
     ]);
 
     return res.json({
       success: true,
-      data: { leads, clients, appointments },
+      data: { leads, clients, appointments, customers, opportunities },
     });
   } catch (err) {
     next(err);

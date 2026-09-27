@@ -105,6 +105,8 @@ router.get('/', async (req, res, next) => {
   }
 });
 
+const { deliveryConn } = require('../db');
+
 // ─── POST /api/leads ────────────────────────────────────────────────────────
 router.post(
   '/',
@@ -134,6 +136,101 @@ router.post(
       const lead = await Lead.create(leadData);
       await audit(req, lead._id, `Lead created: ${lead.name}`, 'create');
 
+      // Direct CRM / Delivery Centre database sync (§5.4, §7.3)
+      try {
+        const custColl = deliveryConn.db.collection('customers');
+        const oppColl = deliveryConn.db.collection('opportunities');
+        const tlColl = deliveryConn.db.collection('timelineevents');
+        const now = new Date();
+
+        let cleanPhone = lead.phone ? String(lead.phone).replace(/\D/g, '') : '';
+        if (cleanPhone.startsWith('61')) cleanPhone = '+' + cleanPhone;
+        else if (cleanPhone.startsWith('0')) cleanPhone = '+61' + cleanPhone.slice(1);
+        else if (cleanPhone) cleanPhone = '+' + cleanPhone;
+
+        let customer = await custColl.findOne({
+          $or: [
+            cleanPhone ? { phone: cleanPhone } : null,
+            lead.email ? { email: lead.email.toLowerCase() } : null,
+          ].filter(Boolean),
+        });
+
+        if (!customer) {
+          const custCount = await custColl.countDocuments();
+          const customer_id = 'CUST-BYD-' + (100 + custCount + 1);
+          const newCust = {
+            customer_id,
+            name: lead.name,
+            phone: cleanPhone || '',
+            email: lead.email ? lead.email.toLowerCase() : null,
+            site: lead.dealer || 'Fairfield',
+            owner_user_id: req.user?.id || 'usr-001',
+            owner_name: lead.allocatedPersonFullName,
+            source: lead.source || 'Walk-in',
+            record_type: 'Individual',
+            lead_prospect_id: String(lead._id),
+            delivery_client_id: null,
+            consent_sms: true,
+            do_not_contact: false,
+            preferred_model: lead.vehicle || 'SEALION 7',
+            tags: [],
+            notes: lead.notes || '',
+            is_merged: false,
+            createdAt: now,
+            updatedAt: now,
+          };
+          await custColl.insertOne(newCust);
+          customer = newCust;
+        } else {
+          await custColl.updateOne(
+            { customer_id: customer.customer_id },
+            { $set: { lead_prospect_id: String(lead._id), updatedAt: now } }
+          );
+        }
+
+        const oppCount = await oppColl.countDocuments();
+        const opportunity_id = 'OPP-BYD-' + (200 + oppCount + 1);
+        await oppColl.insertOne({
+          opportunity_id,
+          customer_id: customer.customer_id,
+          customer_name: customer.name,
+          customer_phone: customer.phone,
+          customer_email: customer.email,
+          site: lead.dealer || customer.site || 'Fairfield',
+          owner_name: lead.allocatedPersonFullName,
+          stage: 'New / Allocated',
+          model: lead.vehicle?.replace(/.*BYD\s+/, '') || 'SEALION 7',
+          variant: 'Premium',
+          vehicle_descriptor: lead.vehicle || 'BYD SEALION 7 Premium',
+          source: lead.source || 'Walk-in',
+          sale_type: 'Retail',
+          lead_prospect_id: String(lead._id),
+          total_price: 58000,
+          list_price: 58000,
+          createdAt: now,
+          updatedAt: now,
+        });
+
+        await tlColl.insertOne({
+          event_id: 'EVT-' + Math.random().toString(36).substring(2, 9).toUpperCase(),
+          customer_id: customer.customer_id,
+          opportunity_id,
+          type: 'system',
+          event_type: 'system',
+          title: 'Prospect Captured in Showroom (Walk-in)',
+          content: `Walk-in prospect ${lead.name} captured by ${lead.allocatedPersonFullName}. Model interest: ${lead.vehicle || 'BYD'}.`,
+          body: `Walk-in prospect ${lead.name} captured by ${lead.allocatedPersonFullName}. Model interest: ${lead.vehicle || 'BYD'}.`,
+          author: lead.allocatedPersonFullName,
+          source: 'Sales Floor',
+          occurred_at: now,
+          visibility: 'internal',
+          createdAt: now,
+          updatedAt: now,
+        });
+      } catch (crmErr) {
+        console.error('CRM sync on lead create error:', crmErr.message);
+      }
+
       return res.status(201).json({ success: true, data: lead });
     } catch (err) {
       next(err);
@@ -157,13 +254,56 @@ router.get('/:id', async (req, res, next) => {
 router.patch('/:id', async (req, res, next) => {
   try {
     const { id } = req.params;
-    // Prevent overwriting _id
     delete req.body._id;
 
     const lead = await Lead.findByIdAndUpdate(id, { $set: req.body }, { new: true, runValidators: true });
     if (!lead) return res.status(404).json({ success: false, message: 'Lead not found.' });
 
     await audit(req, lead._id, `Lead updated: ${Object.keys(req.body).join(', ')}`, 'update');
+
+    // Direct sync to Delivery Centre & CRM customer / opportunity records
+    try {
+      const custColl = deliveryConn.db.collection('customers');
+      const oppColl = deliveryConn.db.collection('opportunities');
+      const tlColl = deliveryConn.db.collection('timelineevents');
+      const now = new Date();
+
+      if (lead.phone || id) {
+        const last8 = lead.phone ? String(lead.phone).slice(-8) : '';
+        const cust = await custColl.findOne({
+          $or: [{ lead_prospect_id: String(id) }, last8 ? { phone: { $regex: last8, $options: 'i' } } : null].filter(Boolean),
+        });
+
+        if (cust) {
+          const custPatch = { updatedAt: now };
+          if (req.body.allocatedPersonFullName) custPatch.owner_name = req.body.allocatedPersonFullName;
+          if (req.body.do_not_contact !== undefined) {
+            custPatch.do_not_contact = req.body.do_not_contact;
+            if (req.body.do_not_contact) custPatch.consent_sms = false;
+          }
+          await custColl.updateOne({ customer_id: cust.customer_id }, { $set: custPatch });
+
+          if (req.body.stage) {
+            await tlColl.insertOne({
+              event_id: 'EVT-' + Math.random().toString(36).substring(2, 9).toUpperCase(),
+              customer_id: cust.customer_id,
+              type: 'stage_change',
+              event_type: 'stage_change',
+              title: `Lead Stage Updated: ${req.body.stage}`,
+              content: `Lead stage transitioned to ${req.body.stage} by ${req.user.name || req.user.email}.`,
+              body: `Lead stage transitioned to ${req.body.stage} by ${req.user.name || req.user.email}.`,
+              author: req.user.name || req.user.email,
+              source: 'Lead Centre',
+              occurred_at: now,
+              visibility: 'internal',
+              createdAt: now,
+              updatedAt: now,
+            });
+          }
+        }
+      }
+    } catch (_) {}
+
     return res.json({ success: true, data: lead });
   } catch (err) {
     next(err);
@@ -203,12 +343,27 @@ router.get('/:id/timeline', async (req, res, next) => {
       .limit(50)
       .lean();
 
+    // Pull unified timeline events from Delivery Centre DB
+    let timelineEvents = [];
+    try {
+      const tlColl = deliveryConn.db.collection('timelineevents');
+      const custColl = deliveryConn.db.collection('customers');
+      const last8 = lead.phone ? String(lead.phone).slice(-8) : '';
+      const cust = await custColl.findOne({
+        $or: [{ lead_prospect_id: String(lead._id) }, last8 ? { phone: { $regex: last8, $options: 'i' } } : null].filter(Boolean),
+      });
+      if (cust) {
+        timelineEvents = await tlColl.find({ customer_id: cust.customer_id }).sort({ occurred_at: -1 }).limit(50).toArray();
+      }
+    } catch (_) {}
+
     return res.json({
       success: true,
       data: {
         lead,
         conversations,
         auditTrail: auditEvents,
+        timelineEvents,
       },
     });
   } catch (err) {
@@ -231,12 +386,63 @@ router.post(
       if (!lead) return res.status(404).json({ success: false, message: 'Lead not found.' });
 
       // Append to existing notes
-      const timestamp = new Date().toISOString();
-      const noteEntry = `[${timestamp}] ${req.user.name || req.user.email}: ${req.body.note}`;
+      const now = new Date();
+      const timestamp = now.toISOString();
+      const authorName = req.user.name || req.user.email;
+      const noteEntry = `[${timestamp}] ${authorName}: ${req.body.note}`;
       lead.notes = lead.notes ? `${lead.notes}\n${noteEntry}` : noteEntry;
+      lead.lastTouch = `Note from ${authorName} · Just now`;
+      lead.lastActivityAt = now;
       await lead.save();
 
       await audit(req, lead._id, `Note added: ${req.body.note.substring(0, 50)}`, 'note');
+
+      // Direct write into Delivery Centre timelineevents & Client comments
+      try {
+        const custColl = deliveryConn.db.collection('customers');
+        const tlColl = deliveryConn.db.collection('timelineevents');
+        const clientColl = deliveryConn.db.collection('clients');
+        const last8 = lead.phone ? String(lead.phone).slice(-8) : '';
+
+        const cust = await custColl.findOne({
+          $or: [{ lead_prospect_id: String(lead._id) }, last8 ? { phone: { $regex: last8, $options: 'i' } } : null].filter(Boolean),
+        });
+
+        if (cust) {
+          await tlColl.insertOne({
+            event_id: 'EVT-' + Math.random().toString(36).substring(2, 9).toUpperCase(),
+            customer_id: cust.customer_id,
+            type: 'note',
+            event_type: 'note',
+            title: 'Lead Centre Note',
+            content: req.body.note,
+            body: req.body.note,
+            author: authorName,
+            source: 'Lead Centre',
+            source_system: 'lead',
+            occurred_at: now,
+            visibility: 'internal',
+            createdAt: now,
+            updatedAt: now,
+          });
+        }
+
+        if (last8) {
+          await clientColl.updateOne(
+            { phone: { $regex: last8, $options: 'i' } },
+            {
+              $push: {
+                comments: {
+                  author_name: `${authorName} (Lead Centre)`,
+                  body: req.body.note,
+                  created_at: now,
+                },
+              },
+            }
+          ).catch(() => {});
+        }
+      } catch (_) {}
+
       return res.json({ success: true, data: lead });
     } catch (err) {
       next(err);

@@ -134,6 +134,35 @@ router.post(
       conversation.msgCount = (conversation.msgCount || 0) + 1;
       await conversation.save();
 
+      // Direct write to CRM timeline (§5.2, §5.7)
+      try {
+        const { deliveryConn } = require('../db');
+        const custColl = deliveryConn.db.collection('customers');
+        const tlColl = deliveryConn.db.collection('timelineevents');
+        const last8 = conversation.phone ? conversation.phone.slice(-8) : '';
+
+        const cust = await custColl.findOne({
+          $or: [conversation.leadId ? { lead_prospect_id: String(conversation.leadId) } : null, last8 ? { phone: { $regex: last8, $options: 'i' } } : null].filter(Boolean),
+        });
+
+        await tlColl.insertOne({
+          event_id: 'EVT-' + Math.random().toString(36).substring(2, 9).toUpperCase(),
+          customer_id: cust?.customer_id || `CUST-CONV-${conversation._id}`,
+          type: 'sms',
+          event_type: 'sms',
+          title: senderType === 'user' ? 'Inbound Customer SMS' : 'Outbound SMS (Lead Centre)',
+          content: req.body.text,
+          body: req.body.text,
+          author: senderType === 'user' ? (conversation.prospectName || 'Customer') : (req.user?.name || req.user?.email || 'Lead Centre Agent'),
+          source: 'Lead Centre SMS',
+          source_system: 'sms',
+          occurred_at: new Date(),
+          visibility: 'customer',
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+      } catch (_) {}
+
       return res.status(201).json({ success: true, data: newMessage });
     } catch (err) {
       next(err);
