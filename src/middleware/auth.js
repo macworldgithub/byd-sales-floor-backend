@@ -11,6 +11,7 @@ const ROLE_ALIASES = {
   site_admin: ROLES.SITE_ADMIN,
   super_admin: ROLES.SUPER_ADMIN,
   consultant: ROLES.SALES_CONSULTANT,
+  agent: ROLES.SALES_CONSULTANT,
   sales_consultant: ROLES.SALES_CONSULTANT,
   bdc: ROLES.BDC,
   lead_controller: ROLES.BDC,
@@ -77,11 +78,43 @@ const generateToken = (user) =>
       name: user.name,
       role: normalizeRole(user.role),
       site: user.site || '',
+      locked_site: user.locked_site || '',
       network_lookup: Boolean(user.network_lookup),
     },
     JWT_SECRET,
     { expiresIn: process.env.JWT_EXPIRES_IN || '12h' }
   );
 
-module.exports = { authenticate, requireRole, generateToken, normalizeRole };
+const normalizeSite = (s) =>
+  String(s || '').toLowerCase().replace(/^byd\s+/i, '').replace(/[^a-z0-9]/g, '').trim();
+
+/**
+ * siteMatches – true when a record's site matches the (locked) site, ignoring "BYD " prefix/case
+ */
+const siteMatches = (recordSite, lockedSite) => {
+  if (!lockedSite) return true;
+  const a = normalizeSite(recordSite);
+  const b = normalizeSite(lockedSite);
+  return Boolean(a) && (a === b || a.includes(b) || b.includes(a));
+};
+
+/**
+ * enforceSiteLock – for site-locked users (JWT claim `locked_site`), overrides every
+ * client-supplied site/yard/location filter so only that site's data can ever be requested.
+ * Must run after `authenticate`.
+ */
+const enforceSiteLock = (req, res, next) => {
+  const locked = req.user?.locked_site;
+  if (!locked) return next();
+  ['site', 'yard', 'location', 'dealership'].forEach((k) => {
+    req.query[k] = locked;
+  });
+  req.query.network_lookup = 'false';
+  if (req.body && typeof req.body === 'object' && !Array.isArray(req.body)) {
+    if (req.method === 'POST' || req.body.site !== undefined) req.body.site = locked;
+  }
+  next();
+};
+
+module.exports = { authenticate, requireRole, generateToken, normalizeRole, enforceSiteLock, siteMatches };
 

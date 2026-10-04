@@ -25,6 +25,9 @@ const EMAIL    = args.email    || 'admin@byd.com';
 const PASSWORD = args.password || 'BYD@Admin2024';
 const NAME     = args.name     || 'BYD Admin';
 const ROLE     = args.role     || 'admin';
+const SITE     = args.site     || '';
+// --locked_site="BYD Nunawading" restricts the user to that site's data on every platform
+const LOCKED_SITE = args.locked_site || '';
 
 // ─── Connect directly (no shared db.js needed) ───────────────────────────────
 const DELIVERY_URI = process.env.DELIVERY_CENTER_MONGO_URI;
@@ -42,8 +45,9 @@ async function seed() {
     {
       email:               { type: String, required: true, unique: true, lowercase: true, trim: true },
       name:                { type: String, required: true },
-      role:                { type: String, enum: ['super_admin', 'admin', 'manager', 'agent', 'consultant'], default: 'consultant' },
+      role:                { type: String, enum: ['super_admin', 'admin', 'site_admin', 'manager', 'sales_manager', 'general_manager', 'agent', 'consultant', 'sales_consultant', 'bdc', 'delivery'], default: 'consultant' },
       site:                { type: String, default: '' },
+      locked_site:         { type: String, default: '' },
       active:              { type: Boolean, default: true },
       password_hash:       { type: String, required: true, select: false },
       must_change_password:{ type: Boolean, default: false },
@@ -57,14 +61,26 @@ async function seed() {
 
   const existing = await User.findOne({ email: EMAIL });
   if (existing) {
+    if (args.update === 'true') {
+      existing.password_hash = await bcrypt.hash(PASSWORD, 12);
+      existing.name = NAME;
+      existing.role = ROLE;
+      existing.site = SITE;
+      existing.locked_site = LOCKED_SITE;
+      existing.active = true;
+      await existing.save();
+      console.log(`✅  Updated existing user "${EMAIL}" (password reset, site="${SITE}", locked_site="${LOCKED_SITE}").`);
+      await conn.close();
+      return;
+    }
     console.log(`ℹ️   User "${EMAIL}" already exists. Skipping creation.`);
-    console.log('    To reset the password, delete the user from MongoDB and re-run this script.');
+    console.log('    Re-run with --update=true to reset its password/site, or delete it from MongoDB.');
     await conn.close();
     return;
   }
 
   const password_hash = await bcrypt.hash(PASSWORD, 12);
-  const user = await User.create({ email: EMAIL, name: NAME, role: ROLE, password_hash });
+  const user = await User.create({ email: EMAIL, name: NAME, role: ROLE, site: SITE, locked_site: LOCKED_SITE, password_hash });
 
   console.log('\n🎉  User created successfully!');
   console.log('────────────────────────────────────');

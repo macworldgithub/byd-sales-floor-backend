@@ -29,6 +29,8 @@ const userSchema = new mongoose.Schema(
     },
     // Site / dealership affiliation
     site: { type: String, default: '' },
+    // When set, the user can only see/act on data for this site (enforced server-side)
+    locked_site: { type: String, default: '' },
     // Cross-site lookup privilege for managers/site admins (§4)
     network_lookup: { type: Boolean, default: false },
     active: { type: Boolean, default: true },

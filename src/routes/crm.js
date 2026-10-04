@@ -6,13 +6,15 @@
  */
 const express = require('express');
 const crmService = require('../services/crmService');
-const { authenticate, requireRole } = require('../middleware/auth');
+const { authenticate, requireRole, enforceSiteLock, siteMatches } = require('../middleware/auth');
 
 const router = express.Router();
 
 // ─── RBAC & Authentication Middleware (§4, §5.10, AC-10) ────────────────────
 // All CRM routes require valid authentication token
 router.use(authenticate);
+// Site-locked users (e.g. a single dealership login) can only ever see their own site's data
+router.use(enforceSiteLock);
 
 // ─── 1. Customers 360 & Lookup (§5.1, AC-1) ──────────────────────────────────
 router.get('/customers/export-csv', async (req, res, next) => {
@@ -90,6 +92,9 @@ router.get('/customers/:id', async (req, res, next) => {
   try {
     const customer = await crmService.getCustomerById(req.params.id);
     if (!customer) {
+      return res.status(404).json({ success: false, message: 'Customer not found' });
+    }
+    if (req.user?.locked_site && !siteMatches(customer.site, req.user.locked_site)) {
       return res.status(404).json({ success: false, message: 'Customer not found' });
     }
     res.json({ success: true, data: customer });
