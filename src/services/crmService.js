@@ -41,9 +41,15 @@ const crmService = {
     const query = { is_merged: { $ne: true } };
 
     // Manager cross-site lookup (§4, §5.1)
-    if (filter.site && filter.site !== 'All' && filter.site !== 'All Sites') {
+    const siteVal = filter.site || filter.yard || filter.location || filter.department;
+    if (siteVal && siteVal !== 'All' && siteVal !== 'All Sites' && siteVal !== 'All Locations' && siteVal !== 'All Yards') {
       if (!filter.network_lookup) {
-        query.site = filter.site;
+        const cleanSite = String(siteVal).replace(/^BYD\s+/i, '').trim();
+        query.$or = [
+          { site: { $regex: cleanSite, $options: 'i' } },
+          { location: { $regex: cleanSite, $options: 'i' } },
+          { dealer: { $regex: cleanSite, $options: 'i' } },
+        ];
       }
     }
     if (filter.owner && filter.owner !== 'All') {
@@ -678,8 +684,14 @@ const crmService = {
     if (filter.model && filter.model !== 'All') {
       query.model = filter.model;
     }
-    if (filter.site && filter.site !== 'All' && filter.site !== 'All Sites') {
-      query.site = filter.site;
+    const oppSiteVal = filter.site || filter.yard || filter.location || filter.department;
+    if (oppSiteVal && oppSiteVal !== 'All' && oppSiteVal !== 'All Sites' && oppSiteVal !== 'All Locations' && oppSiteVal !== 'All Yards') {
+      const cleanOppSite = String(oppSiteVal).replace(/^BYD\s+/i, '').trim();
+      query.$or = [
+        { site: { $regex: cleanOppSite, $options: 'i' } },
+        { location: { $regex: cleanOppSite, $options: 'i' } },
+        { dealer: { $regex: cleanOppSite, $options: 'i' } },
+      ];
     }
     if (filter.owner && filter.owner !== 'All') {
       query.$or = [{ owner_name: filter.owner }, { owner_user_id: filter.owner }];
@@ -1252,8 +1264,14 @@ const crmService = {
     if (filter.status && filter.status !== 'All') {
       query.status = filter.status;
     }
-    if (filter.site && filter.site !== 'All' && filter.site !== 'All Sites') {
-      query.site = filter.site;
+    const allocSiteVal = filter.site || filter.yard || filter.location || filter.department;
+    if (allocSiteVal && allocSiteVal !== 'All' && allocSiteVal !== 'All Sites' && allocSiteVal !== 'All Locations' && allocSiteVal !== 'All Yards') {
+      const cleanAllocSite = String(allocSiteVal).replace(/^BYD\s+/i, '').trim();
+      query.$or = [
+        { site: { $regex: cleanAllocSite, $options: 'i' } },
+        { location: { $regex: cleanAllocSite, $options: 'i' } },
+        { dealer: { $regex: cleanAllocSite, $options: 'i' } },
+      ];
     }
     if (filter.assigned_to && filter.assigned_to !== 'All') {
       query.assigned_to_name = filter.assigned_to;
@@ -1711,6 +1729,11 @@ const crmService = {
     const holdsColl = deliveryConn.db.collection('stockholds');
 
     const query = {};
+    const locVal = filter.location || filter.yard || filter.site;
+    if (locVal && locVal !== 'All' && locVal !== 'All Sites' && locVal !== 'All Locations' && locVal !== 'All Yards') {
+      const cleanLoc = String(locVal).replace(/^BYD\s+/i, '').trim();
+      query.location = { $regex: cleanLoc, $options: 'i' };
+    }
     if (filter.model && filter.model !== 'All') {
       query.$or = [
         { model: { $regex: filter.model, $options: 'i' } },
@@ -1907,8 +1930,14 @@ const crmService = {
     const salesLogColl = deliveryConn.db.collection('saleslogentries');
     const query = {};
 
-    if (filter.site && filter.site !== 'All' && filter.site !== 'All Sites') {
-      query.site = filter.site;
+    const siteVal = filter.site || filter.yard || filter.department || filter.location;
+    if (siteVal && siteVal !== 'All' && siteVal !== 'All Sites' && siteVal !== 'All Locations' && siteVal !== 'All Yards') {
+      const cleanSite = String(siteVal).replace(/^BYD\s+/i, '').trim();
+      query.$or = [
+        { site: { $regex: cleanSite, $options: 'i' } },
+        { department: { $regex: cleanSite, $options: 'i' } },
+        { location: { $regex: cleanSite, $options: 'i' } },
+      ];
     }
     if (filter.consultant && filter.consultant !== 'All') {
       query.consultant_name = { $regex: filter.consultant, $options: 'i' };
@@ -2485,8 +2514,16 @@ const crmService = {
     const skip = (page - 1) * limit;
 
     const filter = {};
-    if (query.site && query.site !== 'All' && query.site !== 'All Sites') {
-      filter.$or = [{ site: query.site }, { dealer: query.site }];
+    const siteVal = query.site || query.yard || query.department || query.location || query.dealer;
+    if (siteVal && siteVal !== 'All' && siteVal !== 'All Sites' && siteVal !== 'All Locations' && siteVal !== 'All Yards') {
+      const cleanSite = String(siteVal).replace(/^BYD\s+/i, '').trim();
+      filter.$or = [
+        { site: { $regex: cleanSite, $options: 'i' } },
+        { dealer: { $regex: cleanSite, $options: 'i' } },
+        { department: { $regex: cleanSite, $options: 'i' } },
+        { location: { $regex: cleanSite, $options: 'i' } },
+        { 'vehicle.yard': { $regex: cleanSite, $options: 'i' } },
+      ];
     }
     if (query.stage) {
       filter.stage = query.stage;
