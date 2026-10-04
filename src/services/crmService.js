@@ -2772,6 +2772,17 @@ const crmService = {
     let records = clients.map((c) => {
       const clientIdStr = String(c._id);
       const linkedOpp = oppByClientId[clientIdStr] || oppByClientId[c.client_id] || {};
+      const inferredSite =
+        c.site ||
+        linkedOpp.site ||
+        (c.location && /nunawading/i.test(c.location) ? 'BYD Nunawading' : c.location) ||
+        (c.department && /nunawading/i.test(c.department) ? 'BYD Nunawading' : c.department) ||
+        (siteVal && siteVal !== 'All' && siteVal !== 'All Sites' ? siteVal : 'BYD Nunawading');
+      const inferredLocation = c.location || inferredSite || 'Nunawading, VIC';
+      const inferredYard = c.yard || (c.vehicle && c.vehicle.yard) || inferredSite;
+      const inferredDealer = c.dealer || c.dealership || inferredSite;
+      const inferredDept = c.department || 'Delivery Centre';
+
       return {
         client_id: c.client_id || clientIdStr,
         opportunity_id: linkedOpp.opportunity_id || c.opportunity_id || '',
@@ -2795,6 +2806,11 @@ const crmService = {
         arrived: Boolean(c.arrived),
         last_comment: c.last_comment || (Array.isArray(c.comments) && c.comments[c.comments.length - 1]?.body) || 'PDI completed, awaiting customer arrival.',
         alert: c.alert || undefined,
+        site: inferredSite,
+        location: inferredLocation,
+        yard: inferredYard,
+        dealer: inferredDealer,
+        department: inferredDept,
       };
     });
 
@@ -2821,6 +2837,11 @@ const crmService = {
         },
         arrived: false,
         last_comment: opp.next_action_desc || 'Vehicle inspection verified. Customer notified.',
+        site: opp.site || 'BYD Nunawading',
+        location: opp.location || opp.site || 'BYD Nunawading',
+        yard: opp.yard || 'BYD Nunawading',
+        dealer: opp.dealer || 'BYD Nunawading',
+        department: 'Delivery Centre',
       }));
     }
 
