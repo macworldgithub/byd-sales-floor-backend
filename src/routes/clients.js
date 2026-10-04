@@ -74,8 +74,20 @@ router.get('/', async (req, res, next) => {
       if (deliveryTo) filter.delivery_date.$lte = deliveryTo;
     }
 
-    if (q) {
+    const locVal = req.query.location || req.query.yard || req.query.site || req.query.dealership;
+    if (locVal && locVal !== 'All' && locVal !== 'All Locations' && locVal !== 'All Yards' && locVal !== 'All Sites') {
+      const cleanLoc = String(locVal).replace(/^BYD\s+/i, '').trim();
       filter.$or = [
+        { location: { $regex: cleanLoc, $options: 'i' } },
+        { site: { $regex: cleanLoc, $options: 'i' } },
+        { yard: { $regex: cleanLoc, $options: 'i' } },
+        { department: { $regex: cleanLoc, $options: 'i' } },
+        { 'vehicle.yard': { $regex: cleanLoc, $options: 'i' } },
+      ];
+    }
+
+    if (q) {
+      const qOr = [
         { name: { $regex: q, $options: 'i' } },
         { phone: { $regex: q, $options: 'i' } },
         { email: { $regex: q, $options: 'i' } },
@@ -84,6 +96,12 @@ router.get('/', async (req, res, next) => {
         { vin: { $regex: q, $options: 'i' } },
         { vy_order_id: { $regex: q, $options: 'i' } },
       ];
+      if (filter.$or) {
+        filter.$and = [{ $or: filter.$or }, { $or: qOr }];
+        delete filter.$or;
+      } else {
+        filter.$or = qOr;
+      }
     }
 
     const skip = (Number(page) - 1) * Number(limit);

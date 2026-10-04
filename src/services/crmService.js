@@ -38,29 +38,45 @@ const crmService = {
     const oppCollection = deliveryConn.db.collection('opportunities');
     const salesLogColl = deliveryConn.db.collection('saleslogentries');
 
-    const query = { is_merged: { $ne: true } };
+    const andConditions = [{ is_merged: { $ne: true } }];
 
-    // Manager cross-site lookup (§4, §5.1)
-    const siteVal = filter.site || filter.yard || filter.location || filter.department;
+    // Site / Dealership location filter
+    const siteVal = filter.site || filter.yard || filter.location || filter.department || filter.dealer;
     if (siteVal && siteVal !== 'All' && siteVal !== 'All Sites' && siteVal !== 'All Locations' && siteVal !== 'All Yards') {
       if (!filter.network_lookup) {
         const cleanSite = String(siteVal).replace(/^BYD\s+/i, '').trim();
-        query.$or = [
-          { site: { $regex: cleanSite, $options: 'i' } },
-          { location: { $regex: cleanSite, $options: 'i' } },
-          { dealer: { $regex: cleanSite, $options: 'i' } },
-        ];
+        andConditions.push({
+          $or: [
+            { site: { $regex: cleanSite, $options: 'i' } },
+            { location: { $regex: cleanSite, $options: 'i' } },
+            { dealer: { $regex: cleanSite, $options: 'i' } },
+          ],
+        });
       }
     }
-    if (filter.owner && filter.owner !== 'All') {
-      query.$or = [{ owner_name: filter.owner }, { owner_user_id: filter.owner }];
+
+    // Owner / Consultant filter
+    if (filter.owner && filter.owner !== 'All' && filter.owner !== 'All Consultants') {
+      const oRegex = { $regex: filter.owner, $options: 'i' };
+      andConditions.push({
+        $or: [{ owner_name: oRegex }, { owner_user_id: filter.owner }],
+      });
     }
-    if (filter.record_type && filter.record_type !== 'All') {
-      query.record_type = filter.record_type;
+
+    // Record type (Individual, Company, Fleet, Household)
+    if (filter.record_type && filter.record_type !== 'All' && filter.record_type !== 'All Types') {
+      andConditions.push({ record_type: filter.record_type });
     }
-    if (filter.q && filter.q.trim()) {
-      const q = filter.q.trim();
-      const regex = new RegExp(q, 'i');
+
+    // Intake source filter (Virtual Yard, Lead Centre, Showroom, Direct Intake)
+    if (filter.source && filter.source !== 'All' && filter.source !== 'All Sources') {
+      andConditions.push({ source: { $regex: filter.source, $options: 'i' } });
+    }
+
+    // Search query q
+    const qRaw = String(filter.q || filter.search || '').trim();
+    if (qRaw) {
+      const regex = new RegExp(qRaw, 'i');
 
       // Comprehensive search across Customer name/phone/email PLUS VIN, rego, VY order ID, stock ID, deal number (§5.1, AC-1)
       const [matchedOpps, matchedSales] = await Promise.all([
@@ -99,8 +115,10 @@ const crmService = {
       if (linkedCustIds.length > 0) {
         orConditions.push({ customer_id: { $in: linkedCustIds } });
       }
-      query.$or = orConditions;
+      andConditions.push({ $or: orConditions });
     }
+
+    const query = andConditions.length > 1 ? { $and: andConditions } : andConditions[0];
 
     const total = await collection.countDocuments(query);
     const page = Math.max(1, parseInt(filter.page, 10) || 1);
@@ -676,36 +694,75 @@ const crmService = {
   async getOpportunities(filter = {}) {
     await ensureDbConnected();
     const oppColl = deliveryConn.db.collection('opportunities');
-    const query = {};
+    const andConditions = [];
 
-    if (filter.stage && filter.stage !== 'All') {
-      query.stage = filter.stage;
+    // Stage filter
+    if (filter.stage && filter.stage !== 'All' && filter.stage !== 'All Stages') {
+      andConditions.push({ stage: filter.stage });
     }
-    if (filter.model && filter.model !== 'All') {
-      query.model = filter.model;
+
+    // Vehicle model filter
+    if (filter.model && filter.model !== 'All' && filter.model !== 'All Models') {
+      const mRegex = { $regex: filter.model, $options: 'i' };
+      andConditions.push({
+        $or: [
+          { model: mRegex },
+          { vehicle_descriptor: mRegex },
+        ],
+      });
     }
-    const oppSiteVal = filter.site || filter.yard || filter.location || filter.department;
+
+    // Site / Dealership location filter
+    const oppSiteVal = filter.site || filter.yard || filter.location || filter.department || filter.dealer;
     if (oppSiteVal && oppSiteVal !== 'All' && oppSiteVal !== 'All Sites' && oppSiteVal !== 'All Locations' && oppSiteVal !== 'All Yards') {
       const cleanOppSite = String(oppSiteVal).replace(/^BYD\s+/i, '').trim();
-      query.$or = [
-        { site: { $regex: cleanOppSite, $options: 'i' } },
-        { location: { $regex: cleanOppSite, $options: 'i' } },
-        { dealer: { $regex: cleanOppSite, $options: 'i' } },
-      ];
+      andConditions.push({
+        $or: [
+          { site: { $regex: cleanOppSite, $options: 'i' } },
+          { location: { $regex: cleanOppSite, $options: 'i' } },
+          { dealer: { $regex: cleanOppSite, $options: 'i' } },
+        ],
+      });
     }
-    if (filter.owner && filter.owner !== 'All') {
-      query.$or = [{ owner_name: filter.owner }, { owner_user_id: filter.owner }];
+
+    // Owner / Consultant filter
+    if (filter.owner && filter.owner !== 'All' && filter.owner !== 'All Consultants') {
+      const oRegex = { $regex: filter.owner, $options: 'i' };
+      andConditions.push({
+        $or: [{ owner_name: oRegex }, { owner_user_id: filter.owner }],
+      });
     }
-    if (filter.q && filter.q.trim()) {
-      const regex = new RegExp(filter.q.trim(), 'i');
-      query.$or = [
-        { customer_name: regex },
-        { vehicle_descriptor: regex },
-        { vy_stock_id: regex },
-        { opportunity_id: regex },
-        { vin: regex },
-      ];
+
+    // Sale type filter (Retail, Fleet, etc.)
+    if (filter.sale_type && filter.sale_type !== 'All') {
+      andConditions.push({ sale_type: { $regex: filter.sale_type, $options: 'i' } });
     }
+
+    // Overdue filter
+    if (filter.overdue === 'true' || filter.is_overdue === 'true') {
+      andConditions.push({ next_action_at: { $lt: new Date().toISOString() }, stage: { $nin: ['Written / Sold', 'Delivered / Won', 'Lost / Parked'] } });
+    }
+
+    // Search query q
+    const oppQStr = String(filter.q || filter.search || '').trim();
+    if (oppQStr) {
+      const regex = new RegExp(oppQStr, 'i');
+      andConditions.push({
+        $or: [
+          { customer_name: regex },
+          { customer_phone: regex },
+          { customer_email: regex },
+          { vehicle_descriptor: regex },
+          { vy_stock_id: regex },
+          { vy_order_id: regex },
+          { opportunity_id: regex },
+          { vin: regex },
+          { owner_name: regex },
+        ],
+      });
+    }
+
+    const query = andConditions.length > 0 ? (andConditions.length === 1 ? andConditions[0] : { $and: andConditions }) : {};
 
     const total = await oppColl.countDocuments(query);
     const page = Math.max(1, parseInt(filter.page, 10) || 1);
@@ -1259,33 +1316,49 @@ const crmService = {
   async getAllocations(filter = {}) {
     await ensureDbConnected();
     const allocColl = deliveryConn.db.collection('allocations');
-    const query = {};
+    const andConditions = [];
 
-    if (filter.status && filter.status !== 'All') {
-      query.status = filter.status;
+    if (filter.status && filter.status !== 'All' && filter.status !== 'All Statuses') {
+      andConditions.push({ status: filter.status });
     }
-    const allocSiteVal = filter.site || filter.yard || filter.location || filter.department;
+    const allocSiteVal = filter.site || filter.yard || filter.location || filter.department || filter.dealer;
     if (allocSiteVal && allocSiteVal !== 'All' && allocSiteVal !== 'All Sites' && allocSiteVal !== 'All Locations' && allocSiteVal !== 'All Yards') {
       const cleanAllocSite = String(allocSiteVal).replace(/^BYD\s+/i, '').trim();
-      query.$or = [
-        { site: { $regex: cleanAllocSite, $options: 'i' } },
-        { location: { $regex: cleanAllocSite, $options: 'i' } },
-        { dealer: { $regex: cleanAllocSite, $options: 'i' } },
-      ];
+      andConditions.push({
+        $or: [
+          { site: { $regex: cleanAllocSite, $options: 'i' } },
+          { location: { $regex: cleanAllocSite, $options: 'i' } },
+          { dealer: { $regex: cleanAllocSite, $options: 'i' } },
+        ],
+      });
     }
-    if (filter.assigned_to && filter.assigned_to !== 'All') {
-      query.assigned_to_name = filter.assigned_to;
+    if (filter.assigned_to && filter.assigned_to !== 'All' && filter.assigned_to !== 'All Consultants') {
+      andConditions.push({
+        $or: [
+          { assigned_to_name: { $regex: filter.assigned_to, $options: 'i' } },
+          { assigned_to_user_id: filter.assigned_to },
+        ],
+      });
     }
-    if (filter.q && filter.q.trim()) {
-      const regex = new RegExp(filter.q.trim(), 'i');
-      query.$or = [
-        { prospect_name: regex },
-        { phone: regex },
-        { email: regex },
-        { vehicle_interest: regex },
-        { allocation_id: regex },
-      ];
+    if (filter.source && filter.source !== 'All') {
+      andConditions.push({ source: { $regex: filter.source, $options: 'i' } });
     }
+    const allocQStr = String(filter.q || filter.search || '').trim();
+    if (allocQStr) {
+      const regex = new RegExp(allocQStr, 'i');
+      andConditions.push({
+        $or: [
+          { prospect_name: regex },
+          { phone: regex },
+          { email: regex },
+          { vehicle_interest: regex },
+          { allocation_id: regex },
+          { last_sms_summary: regex },
+        ],
+      });
+    }
+
+    const query = andConditions.length > 0 ? (andConditions.length === 1 ? andConditions[0] : { $and: andConditions }) : {};
 
     const total = await allocColl.countDocuments(query);
     const page = Math.max(1, parseInt(filter.page, 10) || 1);
@@ -1728,38 +1801,64 @@ const crmService = {
     const invColl = leadConn.db.collection('inventories');
     const holdsColl = deliveryConn.db.collection('stockholds');
 
-    const query = {};
-    const locVal = filter.location || filter.yard || filter.site;
+    const andConditions = [];
+    const locVal = filter.location || filter.yard || filter.site || filter.dealership;
     if (locVal && locVal !== 'All' && locVal !== 'All Sites' && locVal !== 'All Locations' && locVal !== 'All Yards') {
       const cleanLoc = String(locVal).replace(/^BYD\s+/i, '').trim();
-      query.location = { $regex: cleanLoc, $options: 'i' };
+      andConditions.push({
+        $or: [
+          { location: { $regex: cleanLoc, $options: 'i' } },
+          { yard: { $regex: cleanLoc, $options: 'i' } },
+          { site: { $regex: cleanLoc, $options: 'i' } },
+          { dealer: { $regex: cleanLoc, $options: 'i' } },
+        ],
+      });
     }
-    if (filter.model && filter.model !== 'All') {
-      query.$or = [
-        { model: { $regex: filter.model, $options: 'i' } },
-        { 'specifications.model': { $regex: filter.model, $options: 'i' } },
-        { title: { $regex: filter.model, $options: 'i' } },
-      ];
+    if (filter.model && filter.model !== 'All' && filter.model !== 'All Models') {
+      andConditions.push({
+        $or: [
+          { model: { $regex: filter.model, $options: 'i' } },
+          { 'specifications.model': { $regex: filter.model, $options: 'i' } },
+          { title: { $regex: filter.model, $options: 'i' } },
+        ],
+      });
     }
     if (filter.status && filter.status !== 'All') {
       if (filter.status === 'Available') {
-        query.status = { $in: ['Available', 'InStock', 'In Stock'] };
+        andConditions.push({ status: { $in: ['Available', 'InStock', 'In Stock'] } });
       } else if (filter.status === 'Inbound') {
-        query.itemStatus = 'Inbound';
+        andConditions.push({
+          $or: [
+            { itemStatus: 'Inbound' },
+            { status: 'Inbound' },
+          ],
+        });
+      } else if (filter.status === 'Hold' || filter.status === 'On Hold') {
+        andConditions.push({
+          $or: [
+            { status: { $in: ['Hold', 'On Hold', 'Reserved'] } },
+            { isHold: true },
+          ],
+        });
       }
     }
-    if (filter.q && filter.q.trim()) {
-      const regex = new RegExp(filter.q.trim(), 'i');
-      query.$or = [
-        { stock: regex },
-        { title: regex },
-        { 'registration.vin': regex },
-        { 'registration.rego': regex },
-        { 'specifications.badge': regex },
-        { paint: regex },
-        { model: regex },
-      ];
+    const vyQStr = String(filter.q || filter.search || '').trim();
+    if (vyQStr) {
+      const regex = new RegExp(vyQStr, 'i');
+      andConditions.push({
+        $or: [
+          { stock: regex },
+          { title: regex },
+          { 'registration.vin': regex },
+          { 'registration.rego': regex },
+          { 'specifications.badge': regex },
+          { paint: regex },
+          { model: regex },
+        ],
+      });
     }
+
+    const query = andConditions.length > 0 ? (andConditions.length === 1 ? andConditions[0] : { $and: andConditions }) : {};
 
     const total = await invColl.countDocuments(query);
     const page = Math.max(1, parseInt(filter.page, 10) || 1);
@@ -1928,36 +2027,58 @@ const crmService = {
   async getSalesLog(filter = {}) {
     await ensureDbConnected();
     const salesLogColl = deliveryConn.db.collection('saleslogentries');
-    const query = {};
+    const andConditions = [];
 
-    const siteVal = filter.site || filter.yard || filter.department || filter.location;
+    const siteVal = filter.site || filter.yard || filter.department || filter.location || filter.dealer;
     if (siteVal && siteVal !== 'All' && siteVal !== 'All Sites' && siteVal !== 'All Locations' && siteVal !== 'All Yards') {
       const cleanSite = String(siteVal).replace(/^BYD\s+/i, '').trim();
-      query.$or = [
-        { site: { $regex: cleanSite, $options: 'i' } },
-        { department: { $regex: cleanSite, $options: 'i' } },
-        { location: { $regex: cleanSite, $options: 'i' } },
-      ];
+      andConditions.push({
+        $or: [
+          { site: { $regex: cleanSite, $options: 'i' } },
+          { department: { $regex: cleanSite, $options: 'i' } },
+          { location: { $regex: cleanSite, $options: 'i' } },
+          { dealer: { $regex: cleanSite, $options: 'i' } },
+        ],
+      });
     }
-    if (filter.consultant && filter.consultant !== 'All') {
-      query.consultant_name = { $regex: filter.consultant, $options: 'i' };
+    if (filter.consultant && filter.consultant !== 'All' && filter.consultant !== 'All Consultants') {
+      const cRegex = { $regex: filter.consultant, $options: 'i' };
+      andConditions.push({
+        $or: [
+          { consultant_name: cRegex },
+          { repName: cRegex },
+          { salesperson: cRegex },
+        ],
+      });
     }
     if (filter.reconciled === 'true') {
-      query.reconciled_at = { $exists: true, $ne: null };
+      andConditions.push({ reconciled_at: { $exists: true, $ne: null } });
     } else if (filter.reconciled === 'false') {
-      query.reconciled_at = null;
+      andConditions.push({ $or: [{ reconciled_at: null }, { reconciled_at: { $exists: false } }] });
+    } else if (filter.reconciled === 'exception') {
+      andConditions.push({ exception_status: { $in: ['flagged', 'conflict', 'pending_review'] } });
     }
-    if (filter.q && filter.q.trim()) {
-      const regex = new RegExp(filter.q.trim(), 'i');
-      query.$or = [
-        { customer_name: regex },
-        { vehicle: regex },
-        { vin: regex },
-        { sales_log_id: regex },
-        { deal_number: regex },
-        { stock_id: regex },
-      ];
+    if (filter.sale_type && filter.sale_type !== 'All') {
+      andConditions.push({ sale_type: { $regex: filter.sale_type, $options: 'i' } });
     }
+    const logQStr = String(filter.q || filter.search || '').trim();
+    if (logQStr) {
+      const regex = new RegExp(logQStr, 'i');
+      andConditions.push({
+        $or: [
+          { customer_name: regex },
+          { vehicle: regex },
+          { vin: regex },
+          { sales_log_id: regex },
+          { deal_number: regex },
+          { stock_id: regex },
+          { vy_stock_id: regex },
+          { consultant_name: regex },
+        ],
+      });
+    }
+
+    const query = andConditions.length > 0 ? (andConditions.length === 1 ? andConditions[0] : { $and: andConditions }) : {};
 
     const total = await salesLogColl.countDocuments(query);
     const page = Math.max(1, parseInt(filter.page, 10) || 1);
@@ -2513,32 +2634,126 @@ const crmService = {
     const limit = Math.min(100, Math.max(1, parseInt(query.limit || 20, 10)));
     const skip = (page - 1) * limit;
 
-    const filter = {};
+    const andConditions = [];
+
     const siteVal = query.site || query.yard || query.department || query.location || query.dealer;
     if (siteVal && siteVal !== 'All' && siteVal !== 'All Sites' && siteVal !== 'All Locations' && siteVal !== 'All Yards') {
       const cleanSite = String(siteVal).replace(/^BYD\s+/i, '').trim();
-      filter.$or = [
-        { site: { $regex: cleanSite, $options: 'i' } },
-        { dealer: { $regex: cleanSite, $options: 'i' } },
-        { department: { $regex: cleanSite, $options: 'i' } },
-        { location: { $regex: cleanSite, $options: 'i' } },
-        { 'vehicle.yard': { $regex: cleanSite, $options: 'i' } },
-      ];
+      andConditions.push({
+        $or: [
+          { site: { $regex: cleanSite, $options: 'i' } },
+          { dealer: { $regex: cleanSite, $options: 'i' } },
+          { department: { $regex: cleanSite, $options: 'i' } },
+          { location: { $regex: cleanSite, $options: 'i' } },
+          { 'vehicle.yard': { $regex: cleanSite, $options: 'i' } },
+        ],
+      });
     }
-    if (query.stage) {
-      filter.stage = query.stage;
+
+    if (query.stage && query.stage !== 'All' && query.stage !== 'All Delivery Stages') {
+      andConditions.push({
+        $or: [
+          { stage: query.stage },
+          { delivery_stage: query.stage },
+        ],
+      });
     }
-    if (query.q) {
-      const qRegex = { $regex: query.q, $options: 'i' };
-      filter.$or = [
-        { name: qRegex },
-        { customer_name: qRegex },
-        { phone: qRegex },
-        { vin: qRegex },
-        { rego: qRegex },
-        { vehicle: qRegex },
-      ];
+
+    if (query.consultant && query.consultant !== 'All' && query.consultant !== 'All Consultants') {
+      const cRegex = { $regex: query.consultant, $options: 'i' };
+      andConditions.push({
+        $or: [
+          { delivery_consultant: cRegex },
+          { salesperson: cRegex },
+          { handover_specialist: cRegex },
+        ],
+      });
     }
+
+    if (query.contact_status && query.contact_status !== 'All') {
+      andConditions.push({ contact_status: query.contact_status });
+    }
+
+    if (query.docs_completeness && query.docs_completeness !== 'All') {
+      if (query.docs_completeness === 'Complete') {
+        andConditions.push({
+          $or: [
+            { docs_completeness: 'Complete' },
+            { 'docs_status.atrSigned': true },
+          ],
+        });
+      } else {
+        andConditions.push({
+          $or: [
+            { docs_completeness: { $in: ['Partial', 'Incomplete', 'Pending'] } },
+            { 'docs_status.atrSigned': false },
+          ],
+        });
+      }
+    }
+
+    if (query.arrived !== undefined && query.arrived !== 'All') {
+      andConditions.push({ arrived: query.arrived === 'true' || query.arrived === true });
+    }
+
+    // Timeframe filtering
+    if (query.timeframe && query.timeframe !== 'All') {
+      const now = new Date();
+      const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const endOfToday = new Date(startOfToday.getTime() + 86400000 - 1);
+      const endOfTomorrow = new Date(startOfToday.getTime() + 86400000 * 2 - 1);
+      const endOfWeek = new Date(startOfToday.getTime() + 86400000 * 7 - 1);
+
+      if (query.timeframe === 'Today') {
+        andConditions.push({
+          $or: [
+            { delivery_date: { $gte: startOfToday.toISOString(), $lte: endOfToday.toISOString() } },
+            { scheduled_delivery_date: { $gte: startOfToday.toISOString(), $lte: endOfToday.toISOString() } },
+          ],
+        });
+      } else if (query.timeframe === 'Tomorrow') {
+        andConditions.push({
+          $or: [
+            { delivery_date: { $gt: endOfToday.toISOString(), $lte: endOfTomorrow.toISOString() } },
+            { scheduled_delivery_date: { $gt: endOfToday.toISOString(), $lte: endOfTomorrow.toISOString() } },
+          ],
+        });
+      } else if (query.timeframe === 'This Week') {
+        andConditions.push({
+          $or: [
+            { delivery_date: { $gte: startOfToday.toISOString(), $lte: endOfWeek.toISOString() } },
+            { scheduled_delivery_date: { $gte: startOfToday.toISOString(), $lte: endOfWeek.toISOString() } },
+          ],
+        });
+      } else if (query.timeframe === 'Overdue') {
+        andConditions.push({
+          $or: [
+            { delivery_date: { $lt: startOfToday.toISOString() }, stage: { $ne: 'Delivered' } },
+            { scheduled_delivery_date: { $lt: startOfToday.toISOString() }, delivery_stage: { $ne: 'Delivered' } },
+          ],
+        });
+      }
+    }
+
+    const delQStr = String(query.q || query.search || '').trim();
+    if (delQStr) {
+      const qRegex = { $regex: delQStr, $options: 'i' };
+      andConditions.push({
+        $or: [
+          { name: qRegex },
+          { customer_name: qRegex },
+          { phone: qRegex },
+          { vin: qRegex },
+          { rego: qRegex },
+          { registration: qRegex },
+          { vehicle: qRegex },
+          { client_id: qRegex },
+          { opportunity_id: qRegex },
+        ],
+      });
+    }
+
+    const filter = andConditions.length > 0 ? (andConditions.length === 1 ? andConditions[0] : { $and: andConditions }) : {};
 
     const [clients, totalClients, activeSoldOpps] = await Promise.all([
       clientColl.find(filter).sort({ delivery_date: 1, createdAt: -1 }).skip(skip).limit(limit).toArray(),
@@ -2582,7 +2797,7 @@ const crmService = {
       };
     });
 
-    if (records.length === 0 && activeSoldOpps.length > 0) {
+    if (records.length === 0 && activeSoldOpps.length > 0 && !delQStr && (!siteVal || siteVal === 'All' || siteVal === 'All Sites')) {
       records = activeSoldOpps.slice(skip, skip + limit).map((opp) => ({
         client_id: opp.delivery_client_id || `CLI-${opp.opportunity_id}`,
         opportunity_id: opp.opportunity_id,
@@ -3491,36 +3706,83 @@ const crmService = {
   async getAppointments(query = {}) {
     await ensureDbConnected();
     const apptColl = leadConn.db.collection('appointments');
-    const filter = {};
+    const andConditions = [];
 
     const locVal = query.location || query.yard || query.site || query.dealership;
     if (locVal && locVal !== 'All' && locVal !== 'All Sites' && locVal !== 'All Locations' && locVal !== 'All Yards') {
-      filter.$or = [
-        { site: { $regex: locVal, $options: 'i' } },
-        { dealership: { $regex: locVal, $options: 'i' } },
-        { location: { $regex: locVal, $options: 'i' } },
-        { yard: { $regex: locVal, $options: 'i' } },
-        { 'vehicle.yard': { $regex: locVal, $options: 'i' } },
-      ];
-    }
-    if (query.consultantName) {
-      filter.consultantName = { $regex: query.consultantName, $options: 'i' };
-    }
-    if (query.status && query.status !== 'All') {
-      filter.status = query.status;
-    }
-    if (query.type && query.type !== 'All') {
-      filter.type = query.type;
-    }
-    if (query.customer_id) {
-      filter.customer_id = query.customer_id;
+      const cleanLoc = String(locVal).replace(/^BYD\s+/i, '').trim();
+      andConditions.push({
+        $or: [
+          { site: { $regex: cleanLoc, $options: 'i' } },
+          { dealership: { $regex: cleanLoc, $options: 'i' } },
+          { location: { $regex: cleanLoc, $options: 'i' } },
+          { yard: { $regex: cleanLoc, $options: 'i' } },
+          { 'vehicle.yard': { $regex: cleanLoc, $options: 'i' } },
+        ],
+      });
     }
 
-    if (query.q || query.search) {
-      const qStr = String(query.q || query.search).trim();
-      if (qStr) {
-        const qRegex = { $regex: qStr, $options: 'i' };
-        const searchConditions = [
+    const consultVal = query.consultantName || query.consultant || query.bookedBy;
+    if (consultVal && consultVal !== 'All' && consultVal !== 'All Consultants') {
+      const cRegex = { $regex: consultVal, $options: 'i' };
+      andConditions.push({
+        $or: [
+          { consultantName: cRegex },
+          { consultant: cRegex },
+          { bookedBy: cRegex },
+        ],
+      });
+    }
+
+    if (query.status && query.status !== 'All' && query.status !== 'All Statuses') {
+      andConditions.push({ status: { $regex: `^${query.status}$`, $options: 'i' } });
+    }
+
+    if (query.type && query.type !== 'All' && query.type !== 'All Types') {
+      andConditions.push({ type: { $regex: query.type, $options: 'i' } });
+    }
+
+    if (query.customer_id) {
+      andConditions.push({
+        $or: [
+          { customer_id: query.customer_id },
+          { leadId: query.customer_id },
+        ],
+      });
+    }
+
+    // Timeframe filtering
+    if (query.timeframe && query.timeframe !== 'All') {
+      const now = new Date();
+      const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const endOfToday = new Date(startOfToday.getTime() + 86400000 - 1);
+      const endOfTomorrow = new Date(startOfToday.getTime() + 86400000 * 2 - 1);
+      const endOfWeek = new Date(startOfToday.getTime() + 86400000 * 7 - 1);
+
+      if (query.timeframe === 'Today') {
+        andConditions.push({
+          when: { $gte: startOfToday.toISOString(), $lte: endOfToday.toISOString() },
+        });
+      } else if (query.timeframe === 'Tomorrow') {
+        andConditions.push({
+          when: { $gt: endOfToday.toISOString(), $lte: endOfTomorrow.toISOString() },
+        });
+      } else if (query.timeframe === 'This Week') {
+        andConditions.push({
+          when: { $gte: startOfToday.toISOString(), $lte: endOfWeek.toISOString() },
+        });
+      } else if (query.timeframe === 'Upcoming') {
+        andConditions.push({
+          when: { $gte: startOfToday.toISOString() },
+        });
+      }
+    }
+
+    const apptQStr = String(query.q || query.search || '').trim();
+    if (apptQStr) {
+      const qRegex = { $regex: apptQStr, $options: 'i' };
+      andConditions.push({
+        $or: [
           { prospectName: qRegex },
           { customer_name: qRegex },
           { phone: qRegex },
@@ -3528,15 +3790,13 @@ const crmService = {
           { vehicle: qRegex },
           { 'vehicle.raw': qRegex },
           { 'vehicle.model': qRegex },
-        ];
-        if (filter.$or) {
-          filter.$and = [{ $or: filter.$or }, { $or: searchConditions }];
-          delete filter.$or;
-        } else {
-          filter.$or = searchConditions;
-        }
-      }
+          { notes: qRegex },
+          { appointment_id: qRegex },
+        ],
+      });
     }
+
+    const filter = andConditions.length > 0 ? (andConditions.length === 1 ? andConditions[0] : { $and: andConditions }) : {};
 
     const sort = { when: 1, createdAt: -1 };
     const page = Math.max(1, parseInt(query.page, 10) || 1);

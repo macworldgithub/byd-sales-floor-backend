@@ -50,12 +50,13 @@ router.get('/', async (req, res, next) => {
 
     const locVal = req.query.location || req.query.yard || req.query.site || req.query.dealership;
     if (locVal && locVal !== 'All' && locVal !== 'All Locations' && locVal !== 'All Yards' && locVal !== 'All Sites') {
+      const cleanLoc = String(locVal).replace(/^BYD\s+/i, '').trim();
       filter.$or = [
-        { dealership: { $regex: locVal, $options: 'i' } },
-        { location: { $regex: locVal, $options: 'i' } },
-        { site: { $regex: locVal, $options: 'i' } },
-        { yard: { $regex: locVal, $options: 'i' } },
-        { 'vehicle.yard': { $regex: locVal, $options: 'i' } },
+        { dealership: { $regex: cleanLoc, $options: 'i' } },
+        { location: { $regex: cleanLoc, $options: 'i' } },
+        { site: { $regex: cleanLoc, $options: 'i' } },
+        { yard: { $regex: cleanLoc, $options: 'i' } },
+        { 'vehicle.yard': { $regex: cleanLoc, $options: 'i' } },
       ];
     }
 

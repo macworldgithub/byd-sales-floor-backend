@@ -136,19 +136,12 @@ router.post(
 );
 
 // ─── GET /api/auth/crm-session ──────────────────────────────────────────────
-// Provides an authenticated session token for the Sales CRM Layer
-router.get('/crm-session', async (req, res, next) => {
+// Requires valid authentication token – desk session cannot be accessed anonymously
+router.get('/crm-session', authenticate, async (req, res, next) => {
   try {
-    let user = await User.findOne({ active: true, role: { $in: ['sales_consultant', 'sales_manager', 'general_manager'] } });
+    const user = await User.findById(req.user.id);
     if (!user) {
-      // Fallback desk session
-      user = {
-        _id: 'usr-001',
-        name: 'Alex Rivers',
-        email: 'alex.rivers@bydsouthport.com.au',
-        role: 'sales_consultant',
-        site: 'BYD Southport',
-      };
+      return res.status(401).json({ success: false, message: 'User not found or unauthenticated.' });
     }
     const token = generateToken(user);
     return res.json({

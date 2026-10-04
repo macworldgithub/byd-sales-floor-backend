@@ -459,7 +459,7 @@ router.get('/saleslog/export-csv', async (req, res, next) => {
   }
 });
 
-router.get('/saleslog', async (req, res, next) => {
+router.get(['/saleslog', '/sales-log'], async (req, res, next) => {
   try {
     const result = await crmService.getSalesLog(req.query);
     res.json({
