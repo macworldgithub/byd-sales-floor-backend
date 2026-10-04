@@ -43,7 +43,8 @@ const crmService = {
     // Site / Dealership location filter
     const siteVal = filter.site || filter.yard || filter.location || filter.department || filter.dealer;
     if (siteVal && siteVal !== 'All' && siteVal !== 'All Sites' && siteVal !== 'All Locations' && siteVal !== 'All Yards') {
-      if (!filter.network_lookup) {
+      const isNetworkLookup = filter.network_lookup === true || filter.network_lookup === 'true';
+      if (!isNetworkLookup) {
         const cleanSite = String(siteVal).replace(/^BYD\s+/i, '').trim();
         andConditions.push({
           $or: [

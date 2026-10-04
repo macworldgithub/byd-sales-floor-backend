@@ -52,8 +52,13 @@ router.post('/customers/:id/privacy-anonymize', requireRole('manager', 'sales_ma
 router.get('/customers', async (req, res, next) => {
   try {
     const filter = { ...req.query };
-    // Pass user's network_lookup privilege if present
-    if (req.user?.network_lookup || req.user?.role === 'manager' || req.user?.role === 'super_admin' || req.user?.role === 'site_admin') {
+    // Pass user's network_lookup privilege if present (site-locked users never have network_lookup)
+    if (req.user?.locked_site) {
+      filter.network_lookup = false;
+      filter.site = req.user.locked_site;
+      filter.yard = req.user.locked_site;
+      filter.location = req.user.locked_site;
+    } else if (req.user?.network_lookup || req.user?.role === 'manager' || req.user?.role === 'super_admin' || req.user?.role === 'site_admin') {
       filter.network_lookup = req.query.network_lookup === 'true' || req.query.site === 'All Sites' || !req.query.site;
     }
     const result = await crmService.getCustomers(filter);
