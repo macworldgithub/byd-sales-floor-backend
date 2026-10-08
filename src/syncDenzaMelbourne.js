@@ -499,7 +499,7 @@ async function main() {
     const isContractSigned = lc.lead_status === 'Contract Signed';
     const isVehicleOrder = lc.lead_status === 'Vehicle Order';
 
-    const deliveryStage = isDelivered ? 'Delivered' : (isContractSigned ? 'Order' : 'In Transit');
+    const deliveryStage = isDelivered ? 'Delivered' : (isContractSigned ? 'Scheduled' : 'In Transit');
     const deliveryDate = lc.delivered_at
       ? toIsoDate(lc.delivered_at)
       : (lc.order_at ? toIsoDate(lc.order_at) : toIsoDate(lc.created_at));
@@ -509,7 +509,7 @@ async function main() {
     const listPrice = lc.item?.model === 'B8' ? 98700 : (lc.item?.price || 76680);
     const grossMargin = lc.item?.model === 'B8' ? 6200 : 4900;
     const isFinance = (lc.tags || []).some(t => String(t).toLowerCase().includes('finance'));
-    const saleType = isFinance ? 'Finance' : 'Retail';
+    const saleType = 'Retail';
     const dealType = isFinance ? 'Finance' : 'Retail';
 
     // 1. Client document (Delivery Centre / Deliveries view)
@@ -531,13 +531,13 @@ async function main() {
       deal_type: dealType,
       sale_type: saleType,
       trade_in_flag: lc.has_trade_in_photos || false,
-      trade_in_status: lc.has_trade_in_photos ? 'Completed' : 'None',
+      trade_in_status: lc.has_trade_in_photos ? 'Settled' : 'Pending',
       vy_order_id: dealId,
       vy_stock_id: lc.item?.stocknum || null,
       stripe_customer_id: null,
       arrived: isDelivered,
       arrived_at: isDelivered ? new Date(lc.delivered_at || lc.last_activity || Date.now()) : null,
-      contact_status: isDelivered ? 'Delivered' : 'Contacted',
+      contact_status: 'Contacted',
       last_contacted_at: new Date(lc.last_activity || Date.now()),
       assigned_agent_id: null,
       accessories: [],
