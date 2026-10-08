@@ -22,7 +22,7 @@ const inventorySchema = new mongoose.Schema(
     // ── Platform field ──────────────────────────────────────────────────
     platform: {
       type: String,
-      enum: ['manual', 'autogate', 'virtualyard'],
+      enum: ['manual', 'autogate', 'virtualyard', 'dealer_studio'],
       default: 'manual',
     },
 
