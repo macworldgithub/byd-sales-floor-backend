@@ -79,6 +79,7 @@ router.get('/', async (req, res, next) => {
       const cleanLoc = String(locVal).replace(/^BYD\s+/i, '').trim();
       filter.$or = [
         { location: { $regex: cleanLoc, $options: 'i' } },
+        { site_location: { $regex: cleanLoc, $options: 'i' } },
         { site: { $regex: cleanLoc, $options: 'i' } },
         { yard: { $regex: cleanLoc, $options: 'i' } },
         { department: { $regex: cleanLoc, $options: 'i' } },
