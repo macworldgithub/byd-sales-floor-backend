@@ -145,6 +145,7 @@ app.use('/api/search', require('./routes/search'));
 app.use('/api/webhooks', require('./routes/webhooks'));
 app.use('/api/crm', require('./routes/crm'));
 app.use('/api/sequences', require('./routes/sequences'));
+app.use('/api/staff', require('./routes/staff'));
 
 // ─── Error Handling ─────────────────────────────────────────────────────────
 app.use((req, res, next) => {
