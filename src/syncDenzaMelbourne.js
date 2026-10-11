@@ -98,19 +98,28 @@ async function main() {
   const leadsConn = await mongoose.createConnection(uriLeads, { serverSelectionTimeoutMS: 20000 }).asPromise();
   console.log('✅ Connected to MongoDB (byd-panel & byd-leads-new)\n');
 
-  const apiDataDir = path.resolve(__dirname, '../../../api_data');
-  if (!fs.existsSync(apiDataDir)) {
-    throw new Error(`api_data folder not found at ${apiDataDir}`);
+  const candidateDirs = [
+    path.resolve(__dirname, '../../denza-data/dealer-studio-byd/api_data'),
+    path.resolve(__dirname, '../../../denza-data/dealer-studio-byd/api_data'),
+    path.resolve(__dirname, '../../../api_data'),
+    path.resolve(process.cwd(), 'denza-data/dealer-studio-byd/api_data'),
+    path.resolve(process.cwd(), '../denza-data/dealer-studio-byd/api_data'),
+    'd:/sales-floor/denza-data/dealer-studio-byd/api_data',
+  ];
+  const apiDataDir = candidateDirs.find(d => fs.existsSync(d));
+  if (!apiDataDir) {
+    throw new Error('api_data folder not found in any candidate locations');
   }
+  console.log(`📂 Using api_data directory: ${apiDataDir}`);
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // PART 1: DELETE CURRENT DATA OF DENZA MELBOURNE OF SALESLOG FROM DATABASE
+  // PART 1: CHECK & CLEAN ANY OLD LEGACY CSV/JSON SALESLOG DATA (IF PRESENT)
   // ─────────────────────────────────────────────────────────────────────────────
-  console.log('--- PART 1: DELETING SALESLOG DATA OF DENZA MELBOURNE ---');
+  console.log('--- PART 1: CHECKING LEGACY CSV/JSON SALESLOG DATA OF DENZA MELBOURNE ---');
   const clientColl = panelConn.db.collection('clients');
   const salesLogColl = panelConn.db.collection('saleslogentries');
 
-  // Identify saleslog records in clients collection
+  // Identify legacy saleslog records in clients collection
   const denzaSaleslogClientsQuery = {
     $or: [
       { site_location: { $regex: 'denza', $options: 'i' }, imported_from: { $in: ['saleslogs-csv', 'saleslogs-json'] } },
@@ -119,29 +128,36 @@ async function main() {
   };
 
   const saleslogClientsCount = await clientColl.countDocuments(denzaSaleslogClientsQuery);
-  console.log(`Found ${saleslogClientsCount} Denza Melbourne saleslog records in byd-panel.clients.`);
+  console.log(`Found ${saleslogClientsCount} legacy Denza Melbourne saleslog records in byd-panel.clients.`);
 
   const denzaSaleslogEntriesQuery = {
-    $or: [
-      { site: { $regex: 'denza', $options: 'i' } },
-      { dealership: { $regex: 'denza', $options: 'i' } },
-      { location: { $regex: 'denza', $options: 'i' } }
+    $and: [
+      {
+        $or: [
+          { site: { $regex: 'denza', $options: 'i' } },
+          { dealership: { $regex: 'denza', $options: 'i' } },
+          { location: { $regex: 'denza', $options: 'i' } }
+        ]
+      },
+      {
+        source: { $in: ['saleslogs-csv', 'saleslogs-json'] }
+      }
     ]
   };
   const saleslogEntriesCount = await salesLogColl.countDocuments(denzaSaleslogEntriesQuery);
-  console.log(`Found ${saleslogEntriesCount} Denza Melbourne entries in byd-panel.saleslogentries.`);
+  console.log(`Found ${saleslogEntriesCount} legacy Denza Melbourne entries in byd-panel.saleslogentries.`);
 
   if (!isDryRun) {
     if (saleslogClientsCount > 0) {
       const delClientsResult = await clientColl.deleteMany(denzaSaleslogClientsQuery);
-      console.log(`🗑️  Successfully deleted ${delClientsResult.deletedCount} saleslog client records from byd-panel.clients.`);
+      console.log(`🗑️  Successfully deleted ${delClientsResult.deletedCount} legacy saleslog client records from byd-panel.clients.`);
     }
     if (saleslogEntriesCount > 0) {
       const delSalesLogResult = await salesLogColl.deleteMany(denzaSaleslogEntriesQuery);
-      console.log(`🗑️  Successfully deleted ${delSalesLogResult.deletedCount} records from byd-panel.saleslogentries.`);
+      console.log(`🗑️  Successfully deleted ${delSalesLogResult.deletedCount} legacy saleslog entries from byd-panel.saleslogentries.`);
     }
   } else {
-    console.log(`[DRY RUN] Would delete ${saleslogClientsCount} clients and ${saleslogEntriesCount} saleslogentries.`);
+    console.log(`[DRY RUN] Would delete ${saleslogClientsCount} legacy clients and ${saleslogEntriesCount} legacy saleslogentries.`);
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -153,7 +169,12 @@ async function main() {
   console.log('\n[2.1] Processing Denza Inventory...');
   const invColl = leadsConn.db.collection('inventories');
   const carsDetailedDir = path.join(apiDataDir, 'cars_detailed');
-  const allCarsFile = path.join(apiDataDir, 'all_cars_inventory_13.json');
+  const allCarsCandidates = [
+    path.join(apiDataDir, 'all_cars_inventory_12.json'),
+    path.join(apiDataDir, 'all_cars_inventory.json'),
+    path.join(apiDataDir, 'all_cars_inventory_13.json'),
+  ];
+  const allCarsFile = allCarsCandidates.find(f => fs.existsSync(f));
 
   let rawCars = [];
   if (fs.existsSync(carsDetailedDir)) {
@@ -167,7 +188,7 @@ async function main() {
       }
     }
   }
-  if (rawCars.length === 0 && fs.existsSync(allCarsFile)) {
+  if (rawCars.length === 0 && allCarsFile && fs.existsSync(allCarsFile)) {
     rawCars = JSON.parse(fs.readFileSync(allCarsFile, 'utf8'));
   }
 
@@ -261,6 +282,16 @@ async function main() {
   if (!isDryRun && invOperations.length > 0) {
     const invRes = await invColl.bulkWrite(invOperations);
     console.log(`✅ Upserted ${invOperations.length} cars into byd-leads-new.inventories (Matched: ${invRes.matchedCount}, Upserted: ${invRes.upsertedCount}, Modified: ${invRes.modifiedCount})`);
+
+    // Mark cars that are no longer in stock as Inactive/Sold
+    const activeCarIds = uniqueCars.map(c => String(c.id));
+    const markInactiveRes = await invColl.updateMany(
+      { location: 'DENZA Melbourne', platform: 'dealer_studio', identifier: { $nin: activeCarIds } },
+      { $set: { status: 'Inactive', itemStatus: 'Sold', lastSeen: new Date() } }
+    );
+    if (markInactiveRes.modifiedCount > 0) {
+      console.log(`ℹ️ Marked ${markInactiveRes.modifiedCount} cars no longer in Dealer Studio inventory as Inactive/Sold.`);
+    }
   } else {
     console.log(`[DRY RUN] Would upsert ${invOperations.length} cars into byd-leads-new.inventories.`);
   }
@@ -295,9 +326,16 @@ async function main() {
     console.log('✅ Upserted DENZA Melbourne dealership document.');
   }
 
-  // 2.3 LEADS & APPOINTMENTS (byd-leads-new.leads & byd-leads-new.appointments)
-  console.log('\n[2.3] Loading all lead clusters from all_lead_clusters_3313.json...');
-  const allLeadsFile = path.join(apiDataDir, 'all_lead_clusters_3313.json');
+  const allLeadsCandidates = [
+    path.join(apiDataDir, 'all_lead_clusters_3369.json'),
+    path.join(apiDataDir, 'all_lead_clusters.json'),
+    path.join(apiDataDir, 'all_lead_clusters_3313.json'),
+  ];
+  const allLeadsFile = allLeadsCandidates.find(f => fs.existsSync(f));
+  if (!allLeadsFile) {
+    throw new Error(`Lead clusters file not found in ${apiDataDir}`);
+  }
+  console.log(`\n[2.3] Loading all lead clusters from ${path.basename(allLeadsFile)}...`);
   const leadsJson = JSON.parse(fs.readFileSync(allLeadsFile, 'utf8'));
   const leadClusters = leadsJson.lead_clusters || [];
   console.log(`Loaded ${leadClusters.length} lead clusters from api_data.`);
@@ -374,10 +412,15 @@ async function main() {
       },
     };
 
+    const leadDocUpdate = { ...leadDoc };
+    delete leadDocUpdate.createdAt;
     leadOps.push({
       updateOne: {
         filter: { autogateLeadId: leadIdStr },
-        update: { $set: leadDoc },
+        update: {
+          $set: leadDocUpdate,
+          $setOnInsert: { createdAt: createdDate },
+        },
         upsert: true,
       },
     });
@@ -555,7 +598,48 @@ async function main() {
     clientOps.push({
       updateOne: {
         filter: { vy_order_id: dealId },
-        update: { $set: clientDoc },
+        update: {
+          $set: {
+            name: lc.name || 'DENZA Customer',
+            phone: lc.phone || '',
+            email: lc.email || null,
+            vehicle: vehicleDesc,
+            rego: lc.item?.regplate || null,
+            vin: lc.item?.stocknum?.startsWith('LC0') ? lc.item.stocknum : null,
+            delivery_date: deliveryDate,
+            stage: deliveryStage,
+            salesperson: consultant,
+            delivery_consultant: consultant,
+            location: lc.location_name || 'DENZA Melbourne, VIC',
+            deal_type: dealType,
+            sale_type: saleType,
+            trade_in_flag: lc.has_trade_in_photos || false,
+            trade_in_status: lc.has_trade_in_photos ? 'Settled' : 'Pending',
+            vy_stock_id: lc.item?.stocknum || null,
+            arrived: isDelivered,
+            arrived_at: isDelivered ? new Date(lc.delivered_at || lc.last_activity || Date.now()) : null,
+            contact_status: 'Contacted',
+            last_contacted_at: new Date(lc.last_activity || Date.now()),
+            site_location: 'Denza Melbourne',
+            imported_from: 'dealer_studio',
+            platform: 'dealer_studio',
+            imported_at: new Date(),
+            updated_at: new Date(),
+          },
+          $setOnInsert: {
+            id: clientUuid,
+            vy_order_id: dealId,
+            notes: null,
+            address: null,
+            assigned_agent_id: null,
+            stripe_customer_id: null,
+            accessories: [],
+            aftermarket_notes: null,
+            addons: [],
+            comments: [],
+            created_at: new Date(lc.order_at || lc.created_at || Date.now()),
+          }
+        },
         upsert: true,
       },
     });
@@ -591,14 +675,19 @@ async function main() {
       delivery_client_id: clientUuid,
       opportunity_id: oppId,
       customer_id: custId,
-      createdAt: new Date(lc.order_at || lc.created_at || Date.now()),
       updatedAt: new Date(),
     };
 
+    const salesLogUpdate = { ...salesLogEntryDoc };
     salesLogOps.push({
       updateOne: {
         filter: { sales_log_id: salesLogId },
-        update: { $set: salesLogEntryDoc },
+        update: {
+          $set: salesLogUpdate,
+          $setOnInsert: {
+            createdAt: new Date(lc.order_at || lc.created_at || Date.now()),
+          }
+        },
         upsert: true,
       },
     });
@@ -621,14 +710,19 @@ async function main() {
       active_deals_count: isDelivered ? 0 : 1,
       total_deals_count: 1,
       delivery_client_id: clientUuid,
-      createdAt: new Date(lc.created_at || Date.now()),
       updatedAt: new Date(),
     };
 
+    const custUpdate = { ...customerDoc };
     custOps.push({
       updateOne: {
         filter: { customer_id: custId },
-        update: { $set: customerDoc },
+        update: {
+          $set: custUpdate,
+          $setOnInsert: {
+            createdAt: new Date(lc.created_at || Date.now()),
+          }
+        },
         upsert: true,
       },
     });
@@ -658,14 +752,19 @@ async function main() {
       expected_close: deliveryDate,
       delivery_client_id: clientUuid,
       sales_log_id: salesLogId,
-      createdAt: new Date(lc.order_at || lc.created_at || Date.now()),
       updatedAt: new Date(),
     };
 
+    const oppUpdate = { ...oppDoc };
     oppOps.push({
       updateOne: {
         filter: { opportunity_id: oppId },
-        update: { $set: oppDoc },
+        update: {
+          $set: oppUpdate,
+          $setOnInsert: {
+            createdAt: new Date(lc.order_at || lc.created_at || Date.now()),
+          }
+        },
         upsert: true,
       },
     });
@@ -696,26 +795,26 @@ async function main() {
   // VERIFICATION SUMMARY
   // ─────────────────────────────────────────────────────────────────────────────
   console.log('\n=== FINAL VERIFICATION STATS ===');
-  const finalSaleslogClients = await clientColl.countDocuments({ site_location: 'Denza Melbourne', imported_from: 'api_data' });
-  const oldSaleslogClients = await clientColl.countDocuments({ site_location: 'Denza Melbourne', imported_from: { $ne: 'api_data' } });
-  const finalSalesLogEntries = await salesLogColl.countDocuments({ site: 'Denza Melbourne' });
+  const finalClients = await clientColl.countDocuments({ site_location: 'Denza Melbourne', platform: 'dealer_studio' });
+  const finalSalesLogEntries = await salesLogColl.countDocuments({ site: 'Denza Melbourne', platform: 'dealer_studio' });
   const finalLeads = await leadColl.countDocuments({ dealer: 'DENZA Melbourne' });
-  const finalInv = await invColl.countDocuments({ location: 'DENZA Melbourne' });
+  const finalInvAvailable = await invColl.countDocuments({ location: 'DENZA Melbourne', status: 'Available' });
+  const finalInvTotal = await invColl.countDocuments({ location: 'DENZA Melbourne' });
   const finalAppts = await apptColl.countDocuments({ dealership: 'DENZA Melbourne' });
-  const finalCust = await custColl.countDocuments({ site: 'Denza Melbourne' });
-  const finalOpp = await oppColl.countDocuments({ site: 'Denza Melbourne' });
+  const finalCust = await custColl.countDocuments({ site: 'Denza Melbourne', platform: 'dealer_studio' });
+  const finalOpp = await oppColl.countDocuments({ site: 'Denza Melbourne', platform: 'dealer_studio' });
 
   console.log({
     byd_panel: {
-      denza_clients_new: finalSaleslogClients,
-      denza_clients_old_saleslog_remaining: oldSaleslogClients,
+      denza_clients: finalClients,
       denza_sales_log_entries: finalSalesLogEntries,
       denza_customers: finalCust,
       denza_opportunities: finalOpp,
     },
     byd_leads_new: {
       denza_leads: finalLeads,
-      denza_inventories: finalInv,
+      denza_inventories_available: finalInvAvailable,
+      denza_inventories_total: finalInvTotal,
       denza_appointments: finalAppts,
     },
   });
