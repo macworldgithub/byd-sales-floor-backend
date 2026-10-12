@@ -48,7 +48,7 @@ function mapStage(status) {
   if (s.includes('contract') || s.includes('order') || s.includes('test drive') || s.includes('appointed')) return 'TEST DRIVE BOOKED';
   if (s.includes('lost') || s.includes('cancel')) return 'LOST';
   if (s.includes('spam')) return 'OPTED OUT';
-  if (s.includes('contact')) return 'AI QUALIFYING';
+  if (s.includes('contact')) return 'IN FOLLOW-UP';
   return 'NEW ENQUIRIES';
 }
 
@@ -384,7 +384,7 @@ async function main() {
       leadSource: 'Dealer Studio',
       notes: lc.category ? `Category: ${lc.category}` : '',
       enquiryDesc: lc.category || '',
-      control: lc.user_name ? 'Human assisted' : 'AI active',
+      control: lc.user_name ? 'Human assisted' : 'Human',
       assignedTo: lc.user_name || 'Not Assigned',
       allocatedPersonFullName: lc.user_name || '',
       platform: 'dealer_studio',

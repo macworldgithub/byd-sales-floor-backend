@@ -88,7 +88,7 @@ router.post('/mobilemessage/inbound', async (req, res, next) => {
     const appended = await Conversation.updateOne(
       { _id: conversation._id, 'messages.id': { $ne: messageId } },
       { $push: { messages: inboundMsgObj }, $inc: { msgCount: 1 },
-        $set: { lastMessage: text, lastMessageAt: receivedAt(req.body), status: 'active' } }
+        $set: { control: 'Human', lastMessage: text, lastMessageAt: receivedAt(req.body), status: 'active' } }
     );
     if (!appended.modifiedCount) return res.json({ success: true, duplicate: true, conversationId: conversation._id });
 

@@ -30,7 +30,7 @@ const conversationSchema = new mongoose.Schema(
     initials: { type: String, default: '' },
     dealer: { type: String, default: '' },
     status: { type: String, default: 'Contact' },
-    control: { type: String, default: 'AI active' },
+    control: { type: String, default: 'Human' },
     suggestedResponses: [{ type: String }],
     qualification: {
       intent: { type: String, default: '—' },

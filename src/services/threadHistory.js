@@ -66,7 +66,7 @@ function buildThreads(conversations, messages, leads, clients) {
   return [...groups.values()].map(g => {
     g.messages = mergeMessages(g.messages);
     const last = g.messages.at(-1);
-    return { ...g, msgCount: g.messages.length, lastMessage: last?.text || '', lastMessageAt: last?.createdAt || g.lastMessageAt };
+    return { ...g, control: 'Human', msgCount: g.messages.length, lastMessage: last?.text || '', lastMessageAt: last?.createdAt || g.lastMessageAt };
   }).sort((a, b) => new Date(b.lastMessageAt) - new Date(a.lastMessageAt));
 }
 async function getThreads(leadDb, deliveryDb, user, requestedSite, options = {}) {
@@ -105,7 +105,7 @@ async function getThreads(leadDb, deliveryDb, user, requestedSite, options = {})
   return [...unified.values()].map(t => {
     t.messages = mergeMessages(t.messages);
     const last = t.messages.at(-1);
-    return { ...t, msgCount: t.messages.length, lastMessage: last?.text || '', lastMessageAt: last?.createdAt || t.lastMessageAt };
+    return { ...t, control: 'Human', msgCount: t.messages.length, lastMessage: last?.text || '', lastMessageAt: last?.createdAt || t.lastMessageAt };
   }).sort((a, b) => new Date(b.lastMessageAt) - new Date(a.lastMessageAt));
 }
 module.exports = { phoneKey, siteKey, allowedSite, mergeMessages, buildThreads, getThreads };

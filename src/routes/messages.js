@@ -105,6 +105,7 @@ router.post(
       let sendResult;
       try {
         sendResult = await mobileMessageService.sendSms({
+          requestedBy: req.user.id || req.user.email,
           to: normalizedPhone, message: msgBody, sender,
           customRef: client_id ? String(client_id) : undefined,
         });
@@ -245,6 +246,7 @@ router.post('/bulk-send', async (req, res, next) => {
       try {
         target = await recipient(req.user, normalizedPhone, item.client_id, item.customerId, item.leadId, item.site);
         const sendResult = await mobileMessageService.sendSms({
+          requestedBy: req.user.id || req.user.email,
           to: normalizedPhone,
           message: msgBody,
           sender: item.sender,

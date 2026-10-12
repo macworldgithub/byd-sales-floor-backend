@@ -87,7 +87,7 @@ router.post(
   '/:id/messages',
   [
     body('text').notEmpty().withMessage('Message text required'),
-    body('sender').optional().isIn(['ai', 'user', 'agent', 'system']),
+    body('sender').optional().isIn(['agent']),
   ],
   async (req, res, next) => {
     try {
@@ -100,14 +100,15 @@ router.post(
       if (!conversation) return res.status(404).json({ success: false, message: 'Conversation not found.' });
 
       const senderType = req.body.sender || 'agent';
-      if (['agent', 'ai'].includes(senderType) && !conversation.phone) return res.status(400).json({ success: false, message: 'Recipient phone is required' });
+      if (senderType === 'agent' && !conversation.phone) return res.status(400).json({ success: false, message: 'Recipient phone is required' });
       let providerMessageId = null;
       let sendStatus = 'sent';
 
-      // If sent by agent or AI and phone exists, dispatch real SMS via MobileMessage
-      if (['agent', 'ai'].includes(senderType) && conversation.phone) {
+      // Dispatch only staff-authored manual SMS.
+      if (senderType === 'agent' && conversation.phone) {
         try {
           const sendResult = await mobileMessageService.sendSms({
+            requestedBy: req.user.id || req.user.email,
             to: conversation.phone,
             message: req.body.text,
             customRef: String(conversation._id),
@@ -146,7 +147,7 @@ router.post(
 
       await Conversation.updateOne({ _id: conversation._id }, {
         $push: { messages: newMessage }, $inc: { msgCount: 1 },
-        $set: { lastMessage: req.body.text, lastMessageAt: new Date() },
+        $set: { control: 'Human', lastMessage: req.body.text, lastMessageAt: new Date() },
       });
 
       // Direct write to CRM timeline (§5.2, §5.7)
@@ -190,6 +191,7 @@ router.post(
 router.patch('/:id', async (req, res, next) => {
   try {
     if (req.body.dealer !== undefined && !allowedSite(req.user, req.body.dealer)) return res.status(403).json({ success: false, message: 'Site access denied' });
+    req.body.control = 'Human';
     delete req.body.messages;
     delete req.body.phone;
     delete req.body.leadId;
