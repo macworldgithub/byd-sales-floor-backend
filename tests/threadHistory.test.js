@@ -80,3 +80,14 @@ test('legacy inbound replies inherit their outbound site even when one phone has
  assert.equal(denza.msgCount,2);
  assert.equal(threads.find(t=>t.dealer==='BYD Melbourne').msgCount,0);
 });
+
+test('an unknown reply cannot inherit a single conversation site when phone owners conflict',()=>{
+ const { buildThreads, allowedSite }=require('../src/services/threadHistory');
+ const threads=buildThreads(
+  [{_id:'melbourne',phone:'+61499918523',dealer:'BYD Melbourne',messages:[]},
+   {_id:'unknown',phone:'+61499918523',dealer:'',messages:[{id:'ambiguous',sender:'user',text:'Unknown reply',createdAt:'2026-10-12T10:00:00Z'}]}],
+  [{provider_message_id:'ambiguous',phone:'+61499918523',site:'',direction:'inbound',body:'Unknown reply',sent_at:'2026-10-12T10:00:00Z'}],
+  [{phone:'+61499918523',dealer:'BYD Melbourne'},{phone:'+61499918523',dealer:'BYD Nunawading'}],[]);
+ const visible=threads.filter(t=>allowedSite({role:'admin',locked_site:'BYD Melbourne'},t.dealer));
+ assert.equal(visible.flatMap(t=>t.messages).some(m=>m.id==='ambiguous'),false);
+});

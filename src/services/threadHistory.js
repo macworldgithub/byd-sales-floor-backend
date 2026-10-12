@@ -55,7 +55,7 @@ function buildThreads(conversations, messages, leads, clients) {
     const originalClient = original?.client_id ? clients.find(c => [c.id, String(c._id)].includes(String(original.client_id))) : null;
     const correlatedThread = correlation ? conversations.find(c => (c.messages || []).some(msg => msg.sender !== 'user' && String(msg.id) === String(correlation))) : null;
     const sourceThread = conversations.find(c => (c.messages || []).some(msg => String(msg.id) === String(m.provider_message_id)));
-    const site = m.site || original?.site || originalClient?.site_location || originalClient?.site || correlatedThread?.dealer || sourceThread?.dealer || client?.site_location || client?.site || (sites.length === 1 ? matches.find(r => siteKey(r.site))?.site : '') || (uniqueConvoSites.length === 1 ? conversationSites[0] : '');
+    const site = m.site || original?.site || originalClient?.site_location || originalClient?.site || correlatedThread?.dealer || sourceThread?.dealer || client?.site_location || client?.site || (sites.length === 1 ? matches.find(r => siteKey(r.site))?.site : '') || (sites.length <= 1 && uniqueConvoSites.length === 1 ? conversationSites[0] : '');
     const lead = matches.find(r => r.dealer && siteKey(r.dealer) === siteKey(site));
     const g = group(m.phone, site, {
       prospectName: m.client_name || client?.name || lead?.name || m.phone,

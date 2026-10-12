@@ -1,5 +1,5 @@
 /**
- * mobileMessage.js – MobileMessage.com.au SMS Gateway Client
+ * mobileMessage.js ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“ MobileMessage.com.au SMS Gateway Client
  * Handles HTTP Basic Auth, phone number normalization (E.164 Australian),
  * outbound message dispatch, idempotency, and diagnostics.
  */
@@ -7,7 +7,7 @@
 const crypto = require('crypto');
 const Setting = require('../models/lead/Setting');
 
-const BASE_URL = process.env.MOBILEMESSAGE_API_URL || 'https://api.mobilemessage.com.au';
+const DEFAULT_BASE_URL = 'https://api.mobilemessage.com.au';
 
 /**
  * Normalizes phone numbers to standard Australian international format (+614XXXXXXXX)
@@ -17,7 +17,7 @@ const BASE_URL = process.env.MOBILEMESSAGE_API_URL || 'https://api.mobilemessage
 function normalizeAustralianPhone(phone) {
   if (!phone) return '';
   // Strip spaces, dashes, parentheses
-  let cleaned = String(phone).replace(/[\s\-\(\)]/g, '');
+  let cleaned = String(phone).replace(/[^\d+]/g, '');
 
   // 04XX XXX XXX -> +614XXXXXXXX
   if (/^04\d{8}$/.test(cleaned)) {
@@ -51,14 +51,16 @@ function normalizeAustralianPhone(phone) {
 async function getConfig() {
   const envUsername = process.env.MOBILEMESSAGE_USERNAME || '';
   const envPassword = process.env.MOBILEMESSAGE_PASSWORD || process.env.MOBILEMESSAGE_API_KEY || '';
-  const envSender = process.env.MOBILEMESSAGE_SENDER_ID || '';
+  const envSender = process.env.MOBILEMESSAGE_SENDER_ID || process.env.MOBILEMESSAGE_FROM || '+61468104118';
+  const apiUrl = (process.env.MOBILEMESSAGE_API_URL || DEFAULT_BASE_URL).replace(/\/v1\/messages\/?$/, '').replace(/\/+$/, '');
   const envSimulation = process.env.MOBILEMESSAGE_SIMULATION_MODE;
 
   if (envUsername && envPassword) {
     return {
       username: envUsername,
       password: envPassword,
-      senderId: envSender || 'BYD-DIRECT',
+      senderId: envSender,
+      apiUrl,
       simulationMode: envSimulation === 'true',
     };
   }
@@ -69,8 +71,9 @@ async function getConfig() {
       return {
         username: setting.username || '',
         password: setting.apiKey || '',
-        senderId: setting.senderId || envSender || 'BYD-DIRECT',
-        simulationMode: setting.simulationMode !== false,
+        senderId: setting.senderId || envSender,
+        apiUrl,
+        simulationMode: envSimulation === undefined ? setting.simulationMode === true : envSimulation === 'true',
       };
     }
   } catch (err) {
@@ -80,8 +83,9 @@ async function getConfig() {
   return {
     username: '',
     password: '',
-    senderId: envSender || 'BYD-DIRECT',
-    simulationMode: true,
+    senderId: envSender,
+    apiUrl,
+    simulationMode: envSimulation === 'true',
   };
 }
 
@@ -105,11 +109,12 @@ async function sendSms({ to, message, sender, customRef, idempotencyKey }) {
   }
 
   const config = await getConfig();
-  const effectiveSender = sender || config.senderId || 'BYD-DIRECT';
+  const effectiveSender = sender || config.senderId || '+61468104118';
   const key = idempotencyKey || (crypto.randomUUID ? crypto.randomUUID() : `byd-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`);
 
-  // If simulation mode is active or credentials are not yet supplied, simulate send
-  if (config.simulationMode || !config.username || !config.password) {
+  // Simulation must be explicitly enabled; missing credentials are a send failure.
+  if (!config.simulationMode && (!config.username || !config.password)) throw new Error('SMS provider not configured');
+  if (config.simulationMode) {
     const simulatedId = `sim-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
     return {
       success: true,
@@ -118,7 +123,7 @@ async function sendSms({ to, message, sender, customRef, idempotencyKey }) {
       to: normalizedPhone,
       sender: effectiveSender,
       cost: 1,
-      status: 'sent',
+      status: 'simulated',
       sentAt: new Date(),
     };
   }
@@ -126,6 +131,7 @@ async function sendSms({ to, message, sender, customRef, idempotencyKey }) {
   // Production live dispatch to MobileMessage REST API
   const authHeader = 'Basic ' + Buffer.from(`${config.username}:${config.password}`).toString('base64');
   const payload = {
+    enable_unicode: true,
     messages: [
       {
         to: normalizedPhone,
@@ -137,7 +143,7 @@ async function sendSms({ to, message, sender, customRef, idempotencyKey }) {
   };
 
   const executeSend = async () => {
-    const res = await fetch(`${BASE_URL}/v1/messages`, {
+    const res = await fetch(`${config.apiUrl}/v1/messages`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -152,7 +158,7 @@ async function sendSms({ to, message, sender, customRef, idempotencyKey }) {
     if (res.status === 429) {
       // Concurrency limit reached (max 5 in flight). Wait 600ms and retry once.
       await new Promise((resolve) => setTimeout(resolve, 600));
-      const retryRes = await fetch(`${BASE_URL}/v1/messages`, {
+      const retryRes = await fetch(`${config.apiUrl}/v1/messages`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -182,8 +188,9 @@ async function sendSms({ to, message, sender, customRef, idempotencyKey }) {
     throw new Error('MobileMessage API returned an empty result batch');
   }
 
-  if (firstResult.status === 'error' || firstResult.status === 'blocked') {
-    throw new Error(firstResult.error || `Message delivery failed with status: ${firstResult.status}`);
+  const resultStatus = String(firstResult.status || '').toLowerCase();
+  if (!['success', 'queued', 'sent', 'accepted'].includes(resultStatus) || !firstResult.message_id) {
+    throw new Error(firstResult.error || firstResult.message || `Message dispatch rejected: ${firstResult.status || 'missing status or ID'}`);
   }
 
   return {
@@ -192,7 +199,7 @@ async function sendSms({ to, message, sender, customRef, idempotencyKey }) {
     messageId: firstResult.message_id,
     sendId: responseData.send_id,
     cost: firstResult.cost,
-    status: firstResult.status,
+    status: resultStatus,
     to: firstResult.to,
     sender: firstResult.sender,
     sentAt: new Date(),
@@ -206,6 +213,7 @@ async function sendSms({ to, message, sender, customRef, idempotencyKey }) {
  */
 async function testConnection(overrideCredentials) {
   const config = overrideCredentials || (await getConfig());
+  const apiUrl = (config.apiUrl || process.env.MOBILEMESSAGE_API_URL || DEFAULT_BASE_URL).replace(/\/v1\/messages\/?$/, '').replace(/\/+$/, '');
   const username = config.username;
   const password = config.password || config.apiKey;
 
@@ -220,10 +228,10 @@ async function testConnection(overrideCredentials) {
 
   try {
     const [accountRes, sendersRes] = await Promise.all([
-      fetch(`${BASE_URL}/v1/account`, {
+      fetch(`${apiUrl}/v1/account`, {
         headers: { Authorization: authHeader },
       }),
-      fetch(`${BASE_URL}/v1/senders`, {
+      fetch(`${apiUrl}/v1/senders`, {
         headers: { Authorization: authHeader },
       }),
     ]);
@@ -257,7 +265,8 @@ async function testConnection(overrideCredentials) {
  */
 async function lookupMessage(messageId) {
   const config = await getConfig();
-  if (config.simulationMode || !config.username || !config.password) {
+  if (!config.simulationMode && (!config.username || !config.password)) throw new Error("SMS provider not configured");
+  if (config.simulationMode) {
     return {
       message_id: messageId,
       status: 'delivered',
@@ -266,7 +275,7 @@ async function lookupMessage(messageId) {
   }
 
   const authHeader = 'Basic ' + Buffer.from(`${config.username}:${config.password}`).toString('base64');
-  const res = await fetch(`${BASE_URL}/v1/messages?message_id=${encodeURIComponent(messageId)}`, {
+  const res = await fetch(`${config.apiUrl}/v1/messages?message_id=${encodeURIComponent(messageId)}`, {
     headers: { Authorization: authHeader },
   });
 

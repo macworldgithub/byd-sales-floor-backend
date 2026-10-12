@@ -27,4 +27,12 @@ function receivedAt(payload) {
 function inboundDocumentId(id) {
   return require('crypto').createHash('sha256').update('sms-inbound:' + id).digest('hex').slice(0, 24);
 }
-module.exports = { phoneRegex, inboundId, receivedAt, inboundDocumentId };
+function inboundSite(original, source, leads, clients) {
+  const { siteKey } = require('./threadHistory');
+  const originalClient = original?.client_id ? clients.find(c => [c.id, String(c._id)].includes(String(original.client_id))) : null;
+  const correlated = original?.site || originalClient?.site_location || originalClient?.site || source?.dealer;
+  if (correlated) return correlated;
+  const sites = [...leads.map(l => l.dealer || l.site), ...clients.map(c => c.site_location || c.site)].filter(Boolean);
+  return new Set(sites.map(siteKey)).size === 1 ? sites[0] : '';
+}
+module.exports = { phoneRegex, inboundId, receivedAt, inboundDocumentId, inboundSite };

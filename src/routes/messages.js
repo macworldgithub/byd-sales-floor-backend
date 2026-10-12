@@ -14,9 +14,9 @@ const { leadConn, deliveryConn } = require('../db');
 const { phoneRegex } = require('../services/smsEvent');
 async function recipient(user, phone, clientId, customerId, leadId, site) {
   const candidates = [
-    ...(await deliveryConn.db.collection('clients').find({}).toArray()).map(c => ({ ...c, site: c.site_location || c.site })),
-    ...(await deliveryConn.db.collection('customers').find({}).toArray()),
-    ...(await leadConn.db.collection('leads').find({}).toArray()).map(l => ({ ...l, site: l.dealer || l.site })),
+    ...(await deliveryConn.db.collection('clients').find({ phone: phoneRegex(phone) }).toArray()).map(c => ({ ...c, site: c.site_location || c.site })),
+    ...(await deliveryConn.db.collection('customers').find({ phone: phoneRegex(phone) }).toArray()),
+    ...(await leadConn.db.collection('leads').find({ phone: phoneRegex(phone) }).toArray()).map(l => ({ ...l, site: l.dealer || l.site })),
   ];
   const matches = candidates.filter(c => phoneKey(c.phone) === phoneKey(phone)
     && (!clientId || [c.id, String(c._id), c.delivery_client_id].includes(String(clientId)))
@@ -241,8 +241,9 @@ router.post('/bulk-send', async (req, res, next) => {
         continue;
       }
 
+      let target;
       try {
-        const target = await recipient(req.user, normalizedPhone, item.client_id, item.customerId, item.leadId, item.site);
+        target = await recipient(req.user, normalizedPhone, item.client_id, item.customerId, item.leadId, item.site);
         const sendResult = await mobileMessageService.sendSms({
           to: normalizedPhone,
           message: msgBody,
@@ -269,8 +270,14 @@ router.post('/bulk-send', async (req, res, next) => {
         results.sent++;
         results.details.push({ phone: normalizedPhone, status: 'sent', messageId: sendResult.messageId });
       } catch (err) {
+        let failedMessage;
+        if (target) failedMessage = await Message.create({
+          client_id: item.client_id || null, client_name: item.name || item.client_name || target.name,
+          phone: normalizedPhone, site: target.site, body: msgBody, direction: 'outbound', status: 'failed',
+          sent_by_id: req.user.id, sent_by_name: req.user.name || req.user.email, template_id, sent_at: new Date(),
+        });
         results.failed++;
-        results.details.push({ phone: normalizedPhone, status: 'failed', reason: err.message });
+        results.details.push({ phone: normalizedPhone, status: 'failed', reason: err.message, messageId: failedMessage ? String(failedMessage._id) : undefined });
       }
     }
 

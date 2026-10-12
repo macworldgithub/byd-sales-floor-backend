@@ -9,7 +9,7 @@ const Conversation = require('../models/lead/Conversation');
 const Lead = require('../models/lead/Lead');
 const Client = require('../models/delivery/Client');
 const { normalizeAustralianPhone } = require('../services/mobileMessage');
-const { phoneRegex, inboundId, receivedAt, inboundDocumentId } = require('../services/smsEvent');
+const { phoneRegex, inboundId, receivedAt, inboundDocumentId, inboundSite } = require('../services/smsEvent');
 const { siteKey } = require('../services/threadHistory');
 const { deliveryConn } = require('../db');
 
@@ -33,29 +33,19 @@ router.post('/mobilemessage/inbound', async (req, res, next) => {
     const text = String(rawMessage).trim();
     const messageId = inboundId(req.body, phone, text);
 
-    // 1. Try to find matching Lead or Client for name linking
-    let prospectName = 'Prospect (' + phone + ')';
-    let leadId = null;
-    let clientId = null;
-
-    const [matchedLead, matchedClient] = await Promise.all([
-      Lead.findOne({ phone: phoneRegex(phone) }).lean().catch(() => null),
-      Client.findOne({ phone: phoneRegex(phone) }).lean().catch(() => null),
+    const [leads, clients] = await Promise.all([
+      Lead.find({ phone: phoneRegex(phone) }).lean(),
+      Client.find({ phone: phoneRegex(phone) }).lean(),
     ]);
-
-    if (matchedLead) {
-      prospectName = matchedLead.name || prospectName;
-      leadId = String(matchedLead._id);
-    }
-    if (matchedClient) {
-      prospectName = matchedClient.name || prospectName;
-      clientId = String(matchedClient._id);
-    }
-
     const originalId = req.body.original_message_id;
     const original = originalId ? await Message.findOne({ provider_message_id: originalId, direction: 'outbound' }).lean() : null;
-    const source = originalId ? await Conversation.findOne({ 'messages.id': originalId }).lean() : null;
-    const site = original?.site || source?.dealer || matchedLead?.dealer || matchedClient?.site_location || matchedClient?.site || '';
+    const source = originalId ? await Conversation.findOne({ messages: { $elemMatch: { id: originalId, sender: { $ne: 'user' } } } }).lean() : null;
+    const site = inboundSite(original, source, leads, clients);
+    const matchedLead = leads.find(lead => siteKey(lead.dealer) === siteKey(site));
+    const matchedClient = clients.find(client => siteKey(client.site_location || client.site) === siteKey(site));
+    const prospectName = matchedClient?.name || matchedLead?.name || 'Prospect (' + phone + ')';
+    const leadId = matchedLead ? String(matchedLead._id) : null;
+    const clientId = matchedClient ? String(matchedClient._id) : null;
 
     // 2. Record inbound message in Delivery Centre Message collection
     const inboundRecord = {

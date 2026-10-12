@@ -17,3 +17,13 @@ test('documented payload retries use a stable inbound ID distinct from outbound 
 test('explicit inbound provider IDs are preserved',()=>{
  assert.equal(inboundId({message_id:'inbound-id'},'61499918523','reply'),'inbound-id');
 });
+
+test('inbound site follows outbound ownership; ambiguous phone owners fail closed',()=>{
+ const { inboundSite }=require('../src/services/smsEvent');
+ const leads=[{dealer:'BYD Melbourne'},{dealer:'BYD Nunawading'}];
+ const clients=[{id:'delivery-1',site_location:'BYD Melbourne'}];
+ assert.equal(inboundSite(null,null,leads,clients),'');
+ assert.equal(inboundSite({client_id:'delivery-1'},null,leads,clients),'BYD Melbourne');
+ assert.equal(inboundSite(null,{dealer:'BYD Nunawading'},leads,clients),'BYD Nunawading');
+ assert.equal(inboundSite(null,null,[{dealer:'Melbourne CBD'}],clients),'Melbourne CBD');
+});

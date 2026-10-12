@@ -100,6 +100,7 @@ router.post(
       if (!conversation) return res.status(404).json({ success: false, message: 'Conversation not found.' });
 
       const senderType = req.body.sender || 'agent';
+      if (['agent', 'ai'].includes(senderType) && !conversation.phone) return res.status(400).json({ success: false, message: 'Recipient phone is required' });
       let providerMessageId = null;
       let sendStatus = 'sent';
 
