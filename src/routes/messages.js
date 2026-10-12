@@ -161,9 +161,10 @@ router.post(
         const tlColl = deliveryConn.db.collection('timelineevents');
         const last8 = normalizedPhone.slice(-8);
 
-        const cust = await custColl.findOne({
+        const customers = await custColl.find({
           $or: [client_id ? { delivery_client_id: String(client_id) } : null, last8 ? { phone: { $regex: last8, $options: 'i' } } : null].filter(Boolean),
-        });
+        }).toArray();
+        const cust = customers.find(customer => siteKey(customer.site) === siteKey(target.site));
 
         const crypto = require('crypto');
         await tlColl.insertOne({

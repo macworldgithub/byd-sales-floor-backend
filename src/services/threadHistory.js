@@ -42,6 +42,8 @@ function buildThreads(conversations, messages, leads, clients) {
     g.threadIds.push(String(c._id));
     g.leadId ||= c.leadId;
     g.manualProspectId ||= c.manualProspectId;
+    const client = clients.find(client => phoneKey(client.phone) === phoneKey(c.phone) && siteKey(client.site_location || client.site) === siteKey(c.dealer));
+    g.client_id ||= client?.id || (client?._id ? String(client._id) : null);
     g.messages.push(...(c.messages || []));
   }
   for (const m of messages) {
@@ -99,8 +101,12 @@ async function getThreads(leadDb, deliveryDb, user, requestedSite, options = {})
     entry.messages.push(...t.messages);
     entry.threadIds.push(...(t.threadIds || [String(t._id)]));
     entry.sites.push(t.dealer);
-    entry.client_id ||= t.client_id;
-    entry.leadId ||= t.leadId;
+    // Combined history can span sites; recipient identities must stay with the
+    // primary thread's site so replies cannot mix one site's ID with another.
+    if (siteKey(entry.dealer) === siteKey(t.dealer)) {
+      entry.client_id ||= t.client_id;
+      entry.leadId ||= t.leadId;
+    }
   }
   return [...unified.values()].map(t => {
     t.messages = mergeMessages(t.messages);
