@@ -176,7 +176,10 @@ router.delete('/customers/:id/documents/:docId', async (req, res, next) => {
 // ─── 2. Unified Timeline & Note Fanout (§5.2, AC-2, AC-3) ───────────────────
 router.get('/customers/:id/timeline', async (req, res, next) => {
   try {
-    const result = await crmService.getTimeline(req.params.id, req.query);
+    const customer = await crmService.getCustomerById(req.params.id);
+    const { allowedSite } = require('../services/threadHistory');
+    if (!customer || !allowedSite(req.user, customer.site)) return res.status(404).json({ success: false, message: 'Customer not found' });
+    const result = await crmService.getTimeline(req.params.id, req.query, req.user);
     res.json({
       success: true,
       count: result.data.length,

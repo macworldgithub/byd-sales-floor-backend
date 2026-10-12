@@ -9,6 +9,9 @@ const Conversation = require('../models/lead/Conversation');
 const Lead = require('../models/lead/Lead');
 const Client = require('../models/delivery/Client');
 const { normalizeAustralianPhone } = require('../services/mobileMessage');
+const { phoneRegex, inboundId, receivedAt, inboundDocumentId } = require('../services/smsEvent');
+const { siteKey } = require('../services/threadHistory');
+const { deliveryConn } = require('../db');
 
 const router = express.Router();
 
@@ -20,7 +23,7 @@ router.post('/mobilemessage/inbound', async (req, res, next) => {
   try {
     const rawFrom = req.body.from || req.body.sender || req.body.phone || req.body.from_number || req.body.mobile;
     const rawMessage = req.body.message || req.body.body || req.body.text || '';
-    const messageId = req.body.message_id || req.body.MessageId || req.body.id || null;
+
 
     if (!rawFrom || !rawMessage) {
       return res.status(400).json({ success: false, message: 'Missing phone or message body' });
@@ -28,6 +31,7 @@ router.post('/mobilemessage/inbound', async (req, res, next) => {
 
     const phone = normalizeAustralianPhone(rawFrom);
     const text = String(rawMessage).trim();
+    const messageId = inboundId(req.body, phone, text);
 
     // 1. Try to find matching Lead or Client for name linking
     let prospectName = 'Prospect (' + phone + ')';
@@ -35,20 +39,26 @@ router.post('/mobilemessage/inbound', async (req, res, next) => {
     let clientId = null;
 
     const [matchedLead, matchedClient] = await Promise.all([
-      Lead.findOne({ phone: { $regex: phone.slice(-8), $options: 'i' } }).lean().catch(() => null),
-      Client.findOne({ phone: { $regex: phone.slice(-8), $options: 'i' } }).lean().catch(() => null),
+      Lead.findOne({ phone: phoneRegex(phone) }).lean().catch(() => null),
+      Client.findOne({ phone: phoneRegex(phone) }).lean().catch(() => null),
     ]);
 
     if (matchedLead) {
       prospectName = matchedLead.name || prospectName;
       leadId = String(matchedLead._id);
-    } else if (matchedClient) {
+    }
+    if (matchedClient) {
       prospectName = matchedClient.name || prospectName;
       clientId = String(matchedClient._id);
     }
 
+    const originalId = req.body.original_message_id;
+    const original = originalId ? await Message.findOne({ provider_message_id: originalId, direction: 'outbound' }).lean() : null;
+    const source = originalId ? await Conversation.findOne({ 'messages.id': originalId }).lean() : null;
+    const site = original?.site || source?.dealer || matchedLead?.dealer || matchedClient?.site_location || matchedClient?.site || '';
+
     // 2. Record inbound message in Delivery Centre Message collection
-    await Message.create({
+    const inboundRecord = {
       client_id: clientId,
       client_name: prospectName,
       phone,
@@ -58,13 +68,15 @@ router.post('/mobilemessage/inbound', async (req, res, next) => {
       provider: 'mobilemessage',
       provider_message_id: messageId,
       provider_response: req.body,
-      sent_at: new Date(),
-    });
+      sent_at: receivedAt(req.body),
+      site,
+    };
+    if (messageId) await Message.updateOne({ _id: new (require('mongoose').Types.ObjectId)(inboundDocumentId(messageId)) }, { $setOnInsert: inboundRecord }, { upsert: true });
+    else await Message.create(inboundRecord);
 
     // 3. Update or create unified Conversation in Lead Centre
-    let conversation = await Conversation.findOne({
-      phone: { $regex: phone.slice(-8), $options: 'i' },
-    });
+    const candidates = await Conversation.find({ phone: phoneRegex(phone) }).sort({ lastMessageAt: -1 });
+    let conversation = candidates.find(c => source && String(c._id) === String(source._id)) || candidates.find(c => siteKey(c.dealer) === siteKey(site));
 
     const inboundMsgObj = {
       id: messageId || (require('crypto').randomUUID ? require('crypto').randomUUID() : Date.now().toString(36)),
@@ -72,33 +84,23 @@ router.post('/mobilemessage/inbound', async (req, res, next) => {
       text,
       time: new Date().toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit' }),
       status: 'received',
-      createdAt: new Date(),
+      createdAt: receivedAt(req.body),
     };
 
-    if (conversation) {
-      conversation.messages.push(inboundMsgObj);
-      conversation.lastMessage = text;
-      conversation.lastMessageAt = new Date();
-      conversation.msgCount = (conversation.msgCount || 0) + 1;
-      conversation.status = 'active';
-      if (!conversation.prospectName || conversation.prospectName.startsWith('Prospect (')) {
-        conversation.prospectName = prospectName;
-      }
-      await conversation.save();
-    } else {
-      conversation = await Conversation.create({
-        leadId,
-        prospectName,
-        phone,
-        dealer: matchedLead?.dealer || 'Melbourne CBD',
-        status: 'active',
-        control: 'agent',
-        lastMessage: text,
-        lastMessageAt: new Date(),
-        msgCount: 1,
-        messages: [inboundMsgObj],
-      });
+    if (!conversation) {
+      const identity = require('crypto').createHash('sha256').update(siteKey(site) + ':' + require('../services/threadHistory').phoneKey(phone)).digest('hex').slice(0, 24);
+      conversation = await Conversation.findOneAndUpdate(
+        { _id: new (require('mongoose').Types.ObjectId)(identity) },
+        { $setOnInsert: { leadId, prospectName, phone, dealer: site, control: 'Human', status: 'Contact', messages: [], msgCount: 0 } },
+        { upsert: true, new: true }
+      );
     }
+    const appended = await Conversation.updateOne(
+      { _id: conversation._id, 'messages.id': { $ne: messageId } },
+      { $push: { messages: inboundMsgObj }, $inc: { msgCount: 1 },
+        $set: { lastMessage: text, lastMessageAt: receivedAt(req.body), status: 'active' } }
+    );
+    if (!appended.modifiedCount) return res.json({ success: true, duplicate: true, conversationId: conversation._id });
 
     // 4. Update Lead / Client touch timestamps
     if (leadId) {
@@ -174,6 +176,7 @@ router.post('/mobilemessage/status', async (req, res, next) => {
     const status = (req.body.status || req.body.Status || 'delivered').toLowerCase();
 
     if (messageId) {
+      await Conversation.updateMany({ 'messages.id': messageId }, { $set: { 'messages.$[m].status': status } }, { arrayFilters: [{ 'm.id': messageId }] });
       await Message.updateMany(
         { provider_message_id: messageId },
         {

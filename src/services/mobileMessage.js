@@ -24,6 +24,8 @@ function normalizeAustralianPhone(phone) {
     return '+61' + cleaned.substring(1);
   }
 
+  if (/^4\d{8}$/.test(cleaned)) return '+61' + cleaned;
+
   // 614XXXXXXXX -> +614XXXXXXXX
   if (/^614\d{8}$/.test(cleaned)) {
     return '+' + cleaned;

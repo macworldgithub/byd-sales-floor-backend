@@ -6,10 +6,27 @@ const { body, validationResult } = require('express-validator');
 const Message = require('../models/delivery/Message');
 const Client = require('../models/delivery/Client');
 const Lead = require('../models/lead/Lead');
-const Conversation = require('../models/lead/Conversation');
 const AuditEvent = require('../models/delivery/AuditEvent');
 const { authenticate } = require('../middleware/auth');
 const mobileMessageService = require('../services/mobileMessage');
+const { getThreads, allowedSite, phoneKey, siteKey } = require('../services/threadHistory');
+const { leadConn, deliveryConn } = require('../db');
+const { phoneRegex } = require('../services/smsEvent');
+async function recipient(user, phone, clientId, customerId, leadId, site) {
+  const candidates = [
+    ...(await deliveryConn.db.collection('clients').find({}).toArray()).map(c => ({ ...c, site: c.site_location || c.site })),
+    ...(await deliveryConn.db.collection('customers').find({}).toArray()),
+    ...(await leadConn.db.collection('leads').find({}).toArray()).map(l => ({ ...l, site: l.dealer || l.site })),
+  ];
+  const matches = candidates.filter(c => phoneKey(c.phone) === phoneKey(phone)
+    && (!clientId || [c.id, String(c._id), c.delivery_client_id].includes(String(clientId)))
+    && (!customerId || c.customer_id === customerId)
+    && (!leadId || String(c._id) === String(leadId))
+    && (!site || siteKey(c.site) === siteKey(site)));
+  const target = matches.find(c => allowedSite(user, c.site));
+  if (!target) throw Object.assign(new Error('Recipient not found or site access denied'), { statusCode: 403 });
+  return target;
+}
 
 const router = express.Router();
 router.use(authenticate);
@@ -17,15 +34,22 @@ router.use(authenticate);
 router.get('/', async (req, res, next) => {
   try {
     const { client_id, phone, page = 1, limit = 50 } = req.query;
-    const filter = {};
-    if (client_id) filter.client_id = client_id;
-    if (phone) filter.phone = phone;
-
-    const skip = (Number(page) - 1) * Number(limit);
-    const [messages, total] = await Promise.all([
-      Message.find(filter).sort('-sent_at').skip(skip).limit(Number(limit)).lean(),
-      Message.countDocuments(filter),
-    ]);
+    let focusPhone = phone;
+    if (client_id) {
+      const client = await deliveryConn.db.collection('clients').findOne({ $or: [{ id: client_id }, { _id: require('mongoose').isValidObjectId(client_id) ? new (require('mongoose').Types.ObjectId)(client_id) : client_id }] });
+      if (!client || !allowedSite(req.user, client.site_location || client.site)) return res.status(404).json({ success: false, message: 'Client not found' });
+      focusPhone = client.phone;
+    }
+    const threads = await getThreads(leadConn.db, deliveryConn.db, req.user, req.query.site || req.query.site_location, { phone: focusPhone });
+    let rows = threads.flatMap(t => t.messages.filter(m => m.sender !== 'system').map(m => ({
+      id: m.id, _id: m.id, client_id: t.client_id, client_name: t.prospectName, phone: t.phone, site: t.dealer,
+      body: m.text, direction: m.sender === 'user' ? 'inbound' : 'outbound', status: m.status, sent_at: m.createdAt,
+    })));
+    if (phone) rows = rows.filter(m => phoneKey(m.phone) === phoneKey(phone));
+    rows.sort((a, b) => new Date(b.sent_at) - new Date(a.sent_at));
+    const total = rows.length;
+    const skip = (Math.max(1, Number(page)) - 1) * Number(limit);
+    const messages = rows.slice(skip, skip + Math.min(1000, Math.max(1, Number(limit))));
     return res.json({
       success: true,
       data: messages,
@@ -56,15 +80,16 @@ router.post(
 
       const { phone, body: msgBody, client_id, client_name, template_id, sender } = req.body;
       const normalizedPhone = mobileMessageService.normalizeAustralianPhone(phone);
+      const target = await recipient(req.user, normalizedPhone, client_id, req.body.customerId, req.body.leadId, req.body.site);
 
       // Check opt-out suppression across Delivery Centre and Lead Centre (§5.7, AC-8)
       const last8 = normalizedPhone.slice(-8);
       const isOptedOutClient = await Client.findOne({
-        phone: { $regex: last8, $options: 'i' },
+        phone: phoneRegex(normalizedPhone),
         $or: [{ opted_out: true }, { consent_sms: false }],
       });
       const isOptedOutLead = await Lead.findOne({
-        phone: { $regex: last8, $options: 'i' },
+        phone: phoneRegex(normalizedPhone),
         $or: [{ status: 'opted out' }, { tag: 'Opted Out' }, { do_not_contact: true }],
       });
 
@@ -77,20 +102,30 @@ router.post(
       }
 
       // Call MobileMessage service (live or simulated based on credentials/simulationMode)
-      const sendResult = await mobileMessageService.sendSms({
-        to: normalizedPhone,
-        message: msgBody,
-        sender,
-        customRef: client_id ? String(client_id) : undefined,
-      });
+      let sendResult;
+      try {
+        sendResult = await mobileMessageService.sendSms({
+          to: normalizedPhone, message: msgBody, sender,
+          customRef: client_id ? String(client_id) : undefined,
+        });
+      } catch (error) {
+        const failed = await Message.create({
+          client_id, client_name: client_name || target.name,
+          phone: normalizedPhone, site: target.site, body: msgBody,
+          direction: 'outbound', status: 'failed', sent_by_id: req.user.id,
+          sent_by_name: req.user.name || req.user.email, sent_at: new Date(),
+        });
+        return res.status(502).json({ success: false, message: error.message || 'SMS dispatch failed', data: failed });
+      }
 
       const message = await Message.create({
         client_id,
         client_name,
         phone: normalizedPhone,
+        site: target.site,
         body: msgBody,
         direction: 'outbound',
-        status: sendResult.status === 'success' || sendResult.status === 'sent' ? 'sent' : sendResult.status,
+        status: sendResult.simulated ? 'simulated' : sendResult.status === 'success' || sendResult.status === 'sent' ? 'sent' : sendResult.status,
         provider: 'mobilemessage',
         provider_message_id: sendResult.messageId || null,
         provider_response: sendResult.raw || null,
@@ -100,46 +135,7 @@ router.post(
         sent_at: sendResult.sentAt || new Date(),
       });
 
-      // Synchronize into Lead Centre Conversation thread for this phone
-      const outboundMsgObj = {
-        id: sendResult.messageId || (require('crypto').randomUUID ? require('crypto').randomUUID() : Date.now().toString(36)),
-        sender: 'agent',
-        text: msgBody,
-        time: new Date().toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit' }),
-        status: 'sent',
-        createdAt: new Date(),
-      };
-
-      try {
-        let conversation = await Conversation.findOne({
-          phone: { $regex: normalizedPhone.slice(-8), $options: 'i' },
-        });
-
-        if (conversation) {
-          conversation.messages.push(outboundMsgObj);
-          conversation.lastMessage = msgBody;
-          conversation.lastMessageAt = new Date();
-          conversation.msgCount = (conversation.msgCount || 0) + 1;
-          await conversation.save();
-        } else {
-          await Conversation.create({
-            leadId: client_id || null,
-            prospectName: client_name || `Customer (${normalizedPhone})`,
-            phone: normalizedPhone,
-            dealer: 'Melbourne CBD',
-            status: 'active',
-            control: 'agent',
-            lastMessage: msgBody,
-            lastMessageAt: new Date(),
-            msgCount: 1,
-            messages: [outboundMsgObj],
-          });
-        }
-      } catch (convErr) {
-        // Log error but don't fail the message send
-        console.error('Conversation sync error:', convErr.message);
-      }
-
+      // Thread history reads this original message directly across all platforms.
       if (client_id) {
         await AuditEvent.create({
           actor_id: req.user.id,
@@ -151,10 +147,10 @@ router.post(
         }).catch(() => {});
 
         // Update client's contact status
-        await Client.findByIdAndUpdate(client_id, {
-          contact_status: 'Contacted',
-          last_contacted_at: new Date(),
-        });
+        await deliveryConn.db.collection('clients').updateOne(
+          { $or: [{ id: client_id }, { _id: require('mongoose').isValidObjectId(client_id) ? new (require('mongoose').Types.ObjectId)(client_id) : client_id }] },
+          { $set: { contact_status: 'Contacted', last_contacted_at: new Date() } }
+        );
       }
 
       // Direct write to unified CRM timeline (§5.2, §5.7)
@@ -230,11 +226,11 @@ router.post('/bulk-send', async (req, res, next) => {
       // ACMA Opt-out Check
       const [isOptedOutClient, isOptedOutLead] = await Promise.all([
         Client.findOne({
-          phone: { $regex: last8, $options: 'i' },
+          phone: phoneRegex(normalizedPhone),
           $or: [{ opted_out: true }, { consent_sms: false }],
         }),
         Lead.findOne({
-          phone: { $regex: last8, $options: 'i' },
+          phone: phoneRegex(normalizedPhone),
           $or: [{ status: 'opted out' }, { tag: 'Opted Out' }, { do_not_contact: true }],
         }),
       ]);
@@ -246,6 +242,7 @@ router.post('/bulk-send', async (req, res, next) => {
       }
 
       try {
+        const target = await recipient(req.user, normalizedPhone, item.client_id, item.customerId, item.leadId, item.site);
         const sendResult = await mobileMessageService.sendSms({
           to: normalizedPhone,
           message: msgBody,
@@ -257,9 +254,10 @@ router.post('/bulk-send', async (req, res, next) => {
           client_id: item.client_id || null,
           client_name: item.name || item.client_name || `Customer (${normalizedPhone})`,
           phone: normalizedPhone,
+          site: target.site,
           body: msgBody,
           direction: 'outbound',
-          status: 'sent',
+          status: sendResult.simulated ? 'simulated' : sendResult.status === 'success' ? 'sent' : sendResult.status,
           provider: 'mobilemessage',
           provider_message_id: sendResult.messageId || null,
           sent_by_id: req.user.id,

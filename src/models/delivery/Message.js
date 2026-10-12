@@ -9,6 +9,7 @@ const messageSchema = new mongoose.Schema(
     client_id: { type: String, default: null },
     client_name: { type: String, default: null },
     phone: { type: String, required: true },
+    site: { type: String, default: '' },
     body: { type: String, required: true },
     direction: {
       type: String,

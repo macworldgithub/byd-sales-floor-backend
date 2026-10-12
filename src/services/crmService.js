@@ -438,7 +438,7 @@ const crmService = {
   },
 
   // ─── 2. Unified Timeline & Note Fanout (AC-2, AC-3) ────────────────────────
-  async getTimeline(customerId, filter = {}) {
+  async getTimeline(customerId, filter = {}, user) {
     await ensureDbConnected();
     const tlColl = deliveryConn.db.collection('timelineevents');
     const clientColl = deliveryConn.db.collection('clients');
@@ -475,6 +475,27 @@ const crmService = {
             visibility: 'internal',
             deep_link: `https://deliverycentre.com.au/clients/${client._id}`,
           });
+        });
+      }
+    }
+
+    if (customer?.phone) {
+      const { getThreads, phoneKey, siteKey } = require('./threadHistory');
+      const threads = await getThreads(leadConn.db, deliveryConn.db, user || { role: 'super_admin' }, undefined, { phone: customer.phone });
+      const sms = threads.filter(t => phoneKey(t.phone) === phoneKey(customer.phone));
+      for (let i = events.length - 1; i >= 0; i--) {
+        if (/^sms/.test(events[i].type || events[i].event_type || '')) events.splice(i, 1);
+      }
+      for (const thread of sms) for (const m of thread.messages) {
+        if (m.sender === 'system') continue;
+        events.push({
+          event_id: 'SMS-' + m.sender + '-' + m.id, customer_id: customerId,
+          type: m.sender === 'user' ? 'sms_in' : 'sms_out',
+          event_type: m.sender === 'user' ? 'sms_in' : 'sms_out',
+          title: m.sender === 'user' ? 'Inbound SMS' : 'Outbound SMS',
+          content: m.text, body: m.text, status: m.status,
+          author: m.sender === 'user' ? customer.name : m.sender === 'ai' ? 'AI Assistant' : 'Team',
+          source: 'SMS', source_system: 'sms', occurred_at: m.createdAt, timestamp: m.createdAt, visibility: 'customer',
         });
       }
     }

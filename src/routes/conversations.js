@@ -11,9 +11,24 @@ const { body, validationResult } = require('express-validator');
 const { v4: uuidv4 } = require('crypto').randomUUID ? { v4: () => require('crypto').randomUUID() } : { v4: () => Date.now().toString(36) };
 const Conversation = require('../models/lead/Conversation');
 const { authenticate } = require('../middleware/auth');
+const { getThreads, allowedSite } = require('../services/threadHistory');
+const { leadConn, deliveryConn } = require('../db');
+const history = (req) => getThreads(leadConn.db, deliveryConn.db, req.user, req.query.dealer || req.query.site, { phone: req.smsConversation?.phone || req.query.phone });
+
 
 const router = express.Router();
 router.use(authenticate);
+router.use(async (req, res, next) => {
+  try {
+    const id = req.path.split('/')[1];
+    if (id) {
+      const doc = await Conversation.findById(id);
+      if (!doc || !allowedSite(req.user, doc.dealer)) return res.status(404).json({ success: false, message: 'Conversation not found.' });
+      req.smsConversation = doc;
+    }
+    next();
+  } catch (err) { next(err); }
+});
 
 // ─── GET /api/conversations ─────────────────────────────────────────────────
 router.get('/', async (req, res, next) => {
@@ -33,16 +48,14 @@ router.get('/', async (req, res, next) => {
       ];
     }
 
-    const skip = (Number(page) - 1) * Number(limit);
-    const [threads, total] = await Promise.all([
-      Conversation.find(filter)
-        .select('-messages')  // exclude heavy messages array from list view
-        .sort(sort)
-        .skip(skip)
-        .limit(Number(limit))
-        .lean(),
-      Conversation.countDocuments(filter),
-    ]);
+    let all = await history(req);
+    if (status) all = all.filter(t => t.status === status);
+    if (control) all = all.filter(t => t.control === control);
+    if (leadId) all = all.filter(t => String(t.leadId) === leadId);
+    if (q) all = all.filter(t => (t.prospectName + " " + t.phone + " " + t.lastMessage).toLowerCase().includes(q.toLowerCase()));
+    const total = all.length;
+    const skip = (Math.max(1, Number(page)) - 1) * Math.min(1000, Math.max(1, Number(limit)));
+    const threads = all.slice(skip, skip + Math.min(1000, Math.max(1, Number(limit))));
 
     return res.json({
       success: true,
@@ -59,7 +72,8 @@ router.get('/:id', async (req, res, next) => {
   try {
     const conversation = await Conversation.findById(req.params.id).lean();
     if (!conversation) return res.status(404).json({ success: false, message: 'Conversation not found.' });
-    return res.json({ success: true, data: conversation });
+    const unified = (await history(req)).find(t => t.threadIds.includes(req.params.id));
+    return res.json({ success: true, data: unified || conversation });
   } catch (err) {
     next(err);
   }
@@ -98,12 +112,13 @@ router.post(
             customRef: String(conversation._id),
           });
           providerMessageId = sendResult.messageId;
-          sendStatus = sendResult.status === 'success' || sendResult.status === 'sent' ? 'sent' : sendResult.status;
+          sendStatus = sendResult.simulated ? 'simulated' : sendResult.status === 'success' ? 'sent' : sendResult.status;
 
           // Record in Delivery Centre Message collection
           await Message.create({
             client_name: conversation.prospectName,
             phone: conversation.phone,
+            site: conversation.dealer,
             body: req.body.text,
             direction: 'outbound',
             status: sendStatus,
@@ -128,11 +143,10 @@ router.post(
         createdAt: new Date(),
       };
 
-      conversation.messages.push(newMessage);
-      conversation.lastMessage = req.body.text;
-      conversation.lastMessageAt = new Date();
-      conversation.msgCount = (conversation.msgCount || 0) + 1;
-      await conversation.save();
+      await Conversation.updateOne({ _id: conversation._id }, {
+        $push: { messages: newMessage }, $inc: { msgCount: 1 },
+        $set: { lastMessage: req.body.text, lastMessageAt: new Date() },
+      });
 
       // Direct write to CRM timeline (§5.2, §5.7)
       try {
@@ -164,7 +178,7 @@ router.post(
         });
       } catch (_) {}
 
-      return res.status(201).json({ success: true, data: newMessage });
+      return res.status(sendStatus === 'failed' ? 502 : 201).json({ success: sendStatus !== 'failed', message: sendStatus === 'failed' ? 'SMS dispatch failed' : undefined, data: newMessage });
     } catch (err) {
       next(err);
     }
@@ -174,6 +188,10 @@ router.post(
 // ─── PATCH /api/conversations/:id ───────────────────────────────────────────
 router.patch('/:id', async (req, res, next) => {
   try {
+    if (req.body.dealer !== undefined && !allowedSite(req.user, req.body.dealer)) return res.status(403).json({ success: false, message: 'Site access denied' });
+    delete req.body.messages;
+    delete req.body.phone;
+    delete req.body.leadId;
     delete req.body._id;
     const conversation = await Conversation.findByIdAndUpdate(
       req.params.id,
