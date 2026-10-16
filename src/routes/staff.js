@@ -9,6 +9,7 @@ const express = require('express');
 const router = express.Router();
 const User = require('../models/delivery/User');
 const { authenticate } = require('../middleware/auth');
+const { siteConditions } = require('../services/staffDirectory');
 
 function escapeRegex(str) {
   return typeof str === 'string' ? str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : '';
@@ -24,19 +25,9 @@ router.get('/', authenticate, async (req, res, next) => {
 
     if (!hasFullAccess) {
       // Scoped to specific site
-      const safeSite = escapeRegex(userLockedSite.trim());
-      filter.$or = [
-        { locked_site: { $regex: `^${safeSite}$`, $options: 'i' } },
-        { site: { $regex: `^${safeSite}$`, $options: 'i' } },
-        { active_site: { $regex: `^${safeSite}$`, $options: 'i' } },
-      ];
+      filter.$or = await siteConditions(User.db, userLockedSite);
     } else if (req.query.site && req.query.site !== 'All' && req.query.site !== 'All Sites' && req.query.site !== 'All Locations') {
-      const safeSite = escapeRegex(req.query.site.trim());
-      filter.$or = [
-        { locked_site: { $regex: `^${safeSite}$`, $options: 'i' } },
-        { site: { $regex: `^${safeSite}$`, $options: 'i' } },
-        { active_site: { $regex: `^${safeSite}$`, $options: 'i' } },
-      ];
+      filter.$or = await siteConditions(User.db, req.query.site);
     }
 
     // Optional search term
