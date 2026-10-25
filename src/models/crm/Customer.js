@@ -13,7 +13,7 @@ const customerSchema = new mongoose.Schema(
     email: { type: String, default: null, index: true },
     site: {
       type: String,
-      enum: ['Fairfield', 'Melbourne City', 'Doncaster', 'Nunawading', 'Caroline Springs', 'Holding Yard VIC', 'All Sites'],
+      enum: ['Fairfield', 'Melbourne City', 'Doncaster', 'Nunawading', 'Caroline Springs', 'BYD Fairfield', 'BYD Melbourne City', 'BYD Doncaster', 'BYD Nunawading', 'BYD Caroline Springs', 'Denza Melbourne', 'Holding Yard VIC', 'All Sites'],
       default: 'Fairfield',
     },
     owner_user_id: { type: String, default: 'usr-001' },

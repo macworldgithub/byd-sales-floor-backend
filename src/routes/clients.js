@@ -24,6 +24,7 @@ const { body, validationResult } = require('express-validator');
 const Client = require('../models/delivery/Client');
 const AuditEvent = require('../models/delivery/AuditEvent');
 const { authenticate, requireRole } = require('../middleware/auth');
+const { clientSiteFilter } = require('../services/deliverySite');
 
 const router = express.Router();
 router.use(authenticate);
@@ -74,17 +75,9 @@ router.get('/', async (req, res, next) => {
       if (deliveryTo) filter.delivery_date.$lte = deliveryTo;
     }
 
-    const locVal = req.query.location || req.query.yard || req.query.site || req.query.dealership;
+    const locVal = req.user.locked_site || req.query.location || req.query.yard || req.query.site || req.query.dealership;
     if (locVal && locVal !== 'All' && locVal !== 'All Locations' && locVal !== 'All Yards' && locVal !== 'All Sites') {
-      const cleanLoc = String(locVal).replace(/^BYD\s+/i, '').trim();
-      filter.$or = [
-        { location: { $regex: cleanLoc, $options: 'i' } },
-        { site_location: { $regex: cleanLoc, $options: 'i' } },
-        { site: { $regex: cleanLoc, $options: 'i' } },
-        { yard: { $regex: cleanLoc, $options: 'i' } },
-        { department: { $regex: cleanLoc, $options: 'i' } },
-        { 'vehicle.yard': { $regex: cleanLoc, $options: 'i' } },
-      ];
+      Object.assign(filter, clientSiteFilter(locVal));
     }
 
     if (q) {

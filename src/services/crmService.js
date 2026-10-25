@@ -6,6 +6,7 @@
  */
 const crypto = require('crypto');
 const { deliveryConn, leadConn, ensureDbConnected } = require('../db');
+const { clientSiteFilter } = require('./deliverySite');
 
 function formatPhoneE164(phone) {
   if (!phone) return '';
@@ -2660,16 +2661,7 @@ const crmService = {
 
     const siteVal = query.site || query.yard || query.department || query.location || query.dealer;
     if (siteVal && siteVal !== 'All' && siteVal !== 'All Sites' && siteVal !== 'All Locations' && siteVal !== 'All Yards') {
-      const cleanSite = String(siteVal).replace(/^BYD\s+/i, '').trim();
-      andConditions.push({
-        $or: [
-          { site: { $regex: cleanSite, $options: 'i' } },
-          { dealer: { $regex: cleanSite, $options: 'i' } },
-          { department: { $regex: cleanSite, $options: 'i' } },
-          { location: { $regex: cleanSite, $options: 'i' } },
-          { 'vehicle.yard': { $regex: cleanSite, $options: 'i' } },
-        ],
-      });
+      andConditions.push(clientSiteFilter(siteVal));
     }
 
     if (query.stage && query.stage !== 'All' && query.stage !== 'All Delivery Stages') {
@@ -2794,6 +2786,7 @@ const crmService = {
       const clientIdStr = String(c._id);
       const linkedOpp = oppByClientId[clientIdStr] || oppByClientId[c.client_id] || {};
       const inferredSite =
+        c.site_location ||
         c.site ||
         linkedOpp.site ||
         (c.location && /nunawading/i.test(c.location) ? 'BYD Nunawading' : c.location) ||

@@ -123,6 +123,7 @@ const clientSchema = new mongoose.Schema(
     salesperson: { type: String, default: null },
     notes: { type: String, default: null },
     address: { type: String, default: null },
+    site_location: { type: String, default: null, index: true },
     location: { type: String, default: null },
 
     // ── VY / integrations ─────────────────────────────────────────────
