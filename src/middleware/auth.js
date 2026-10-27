@@ -1,5 +1,6 @@
 const jwt = require('jsonwebtoken');
 const { ROLES, ALL_ROLES } = require('../constants/roles');
+const { hasPlatform, resolveSite } = require('../services/accountAccess');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'change_me_in_production';
 
@@ -24,7 +25,7 @@ const normalizeRole = (role) => ROLE_ALIASES[role] || role;
 /**
  * authenticate – attaches decoded user to req.user or returns 401
  */
-const authenticate = (req, res, next) => {
+const authenticate = async (req, res, next) => {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     return res.status(401).json({ success: false, message: 'No token provided.' });
@@ -33,16 +34,31 @@ const authenticate = (req, res, next) => {
   const token = authHeader.split(' ')[1];
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
-    if (decoded.role) {
-      decoded.role = normalizeRole(decoded.role);
+    const User = require('../models/delivery/User');
+    const account = await User.findById(decoded.id).lean();
+    if (!account || account.active === false || account.deleted_at || (decoded.auth_version || 0) !== (account.auth_version || 0)) {
+      return res.status(401).json({ success: false, message: 'Session revoked. Please sign in again.' });
     }
-    req.user = decoded; // { id, email, role, site, network_lookup }
-    next();
+    const platform = decoded.platform || 'sales_floor';
+    if (!hasPlatform(account, platform) || (req.baseUrl === '/api/crm' && !hasPlatform(account, 'crm'))) {
+      return res.status(403).json({ success: false, message: 'This account does not have access to this platform.' });
+    }
+    const requestedSite = req.headers['x-site'] || req.query.site || req.query.yard || req.query.location || req.query.dealership || req.body?.site;
+    const locked_site = resolveSite(account, requestedSite);
+    req.user = { ...decoded, id: String(account._id), email: account.email, name: account.name, role: normalizeRole(account.role), site: account.site,
+      locked_site, network_lookup: !locked_site && !!account.network_lookup, platform, allowed_sites: account.allowed_sites, all_sites: account.all_sites, platform_access: account.platform_access };
+    if (Array.isArray(account.allowed_sites) && !account.all_sites && req.originalUrl) {
+      const { deliveryConn, leadConn } = require('../db');
+      await require('../services/resourceSiteAccess').guardResourceSites(req, { panel: deliveryConn.db, lead: leadConn.db });
+    }
+    return enforceSiteLock(req, res, next);
   } catch (err) {
     if (err.name === 'TokenExpiredError') {
       return res.status(401).json({ success: false, message: 'Token expired.' });
     }
-    return res.status(401).json({ success: false, message: 'Invalid token.' });
+    if (err.statusCode) return res.status(err.statusCode).json({ success: false, message: err.message });
+    if (err.name === 'JsonWebTokenError' || err.name === 'CastError') return res.status(401).json({ success: false, message: 'Invalid token.' });
+    return next(err);
   }
 };
 
@@ -70,7 +86,7 @@ const requireRole = (...allowedRoles) => {
 /**
  * generateToken – create a signed JWT for a user document
  */
-const generateToken = (user) =>
+const generateToken = (user, platform = 'sales_floor') =>
   jwt.sign(
     {
       id: user._id?.toString() || user.id,
@@ -80,6 +96,11 @@ const generateToken = (user) =>
       site: user.site || '',
       locked_site: user.locked_site || '',
       network_lookup: Boolean(user.network_lookup),
+      auth_version: user.auth_version || 0,
+      platform,
+      allowed_sites: user.allowed_sites,
+      all_sites: user.all_sites,
+      platform_access: user.platform_access,
     },
     JWT_SECRET,
     { expiresIn: process.env.JWT_EXPIRES_IN || '12h' }

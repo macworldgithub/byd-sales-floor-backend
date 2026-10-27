@@ -13,6 +13,7 @@ const Appointment = require('../models/lead/Appointment');
 const Lead = require('../models/lead/Lead');
 const AuditTrail = require('../models/lead/AuditTrail');
 const { authenticate, requireRole } = require('../middleware/auth');
+const { appointmentReferenceFilter, leadReferenceFilter } = require('../services/appointmentReference');
 
 const router = express.Router();
 router.use(authenticate);
@@ -46,7 +47,7 @@ router.get('/', async (req, res, next) => {
 
     if (status && status !== 'All') filter.status = status;
     if (type && type !== 'All') filter.type = type;
-    if (leadId) filter.leadId = leadId;
+    if (leadId) filter.leadId = appointmentReferenceFilter(leadId);
 
     const locVal = req.query.location || req.query.yard || req.query.site || req.query.dealership;
     if (locVal && locVal !== 'All' && locVal !== 'All Locations' && locVal !== 'All Yards' && locVal !== 'All Sites') {
@@ -184,7 +185,8 @@ const generateIcs = (appts) => {
   ];
 
   appts.forEach((a) => {
-    const dt = new Date(a.when || Date.now());
+    const dt = new Date(a.testDriveDate || a.when);
+    if ((!a.testDriveDate && !a.when) || Number.isNaN(dt.getTime())) return;
     const startStr = dt.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
     const endDt = new Date(dt.getTime() + (a.durationMinutes || 45) * 60000);
     const endStr = endDt.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
@@ -302,11 +304,11 @@ router.patch('/:id', async (req, res, next) => {
     // Handle No Show → update lead and record timeline event (§5.2, §10 AC-4)
     if (req.body.status === 'No Show') {
       if (appt.leadId) {
-        await Lead.findByIdAndUpdate(appt.leadId, {
+        const lead = await Lead.findOneAndUpdate(leadReferenceFilter(appt.leadId), {
           stage: 'Qualified',
           lastTouch: 'Test Drive No-Show · Follow-up Required',
         }).catch(() => {});
-        await audit(req, appt.leadId, `Test drive marked No Show: ${appt.prospectName}`);
+        if (lead) await audit(req, lead._id, `Test drive marked No Show: ${appt.prospectName}`);
       }
       const crypto = require('crypto');
       await tlColl.insertOne({
@@ -323,11 +325,11 @@ router.patch('/:id', async (req, res, next) => {
       }).catch(() => {});
     } else if (req.body.status === 'Completed') {
       if (appt.leadId) {
-        await Lead.findByIdAndUpdate(appt.leadId, {
+        const lead = await Lead.findOneAndUpdate(leadReferenceFilter(appt.leadId), {
           stage: 'Committed',
           lastTouch: 'Test Drive Completed · Ready for Offer',
         }).catch(() => {});
-        await audit(req, appt.leadId, `Test drive completed successfully: ${appt.prospectName}`);
+        if (lead) await audit(req, lead._id, `Test drive completed successfully: ${appt.prospectName}`);
       }
       const crypto = require('crypto');
       await tlColl.insertOne({

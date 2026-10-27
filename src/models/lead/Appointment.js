@@ -7,6 +7,9 @@ const { leadConn } = require('../../db');
 const appointmentSchema = new mongoose.Schema(
   {
     when: { type: String, required: true },
+    appointmentId: { type: String, default: null, index: true },
+    testDriveDate: { type: Date, default: null },
+    platform: { type: String, default: 'manual' },
     prospectName: { type: String, required: true },
     phone: { type: String, default: '0491 570 204' },
     type: {
@@ -23,8 +26,8 @@ const appointmentSchema = new mongoose.Schema(
       default: 'Confirmed',
     },
     leadId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'Lead',
+      // Existing manual appointments use ObjectIds; imports use external string IDs.
+      type: mongoose.Schema.Types.Mixed,
       required: false,
     },
     consultantName: { type: String, default: '' },

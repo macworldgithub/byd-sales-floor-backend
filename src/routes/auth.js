@@ -9,6 +9,7 @@ const { body, validationResult } = require('express-validator');
 const User = require('../models/delivery/User');
 const AuditEvent = require('../models/delivery/AuditEvent');
 const { generateToken, authenticate } = require('../middleware/auth');
+const { hasPlatform } = require('../services/accountAccess');
 
 const router = express.Router();
 
@@ -16,7 +17,7 @@ const router = express.Router();
 router.post(
   '/login',
   [
-    body('email').isEmail().normalizeEmail().withMessage('Valid email required'),
+    body('email').trim().isEmail().withMessage('Valid email required').customSanitizer(value => value.toLowerCase()),
     body('password').notEmpty().withMessage('Password required'),
   ],
   async (req, res, next) => {
@@ -38,12 +39,16 @@ router.post(
       if (!valid) {
         return res.status(401).json({ success: false, message: 'Invalid credentials.' });
       }
+      const platform = req.body.platform || 'sales_floor';
+      if (!['crm', 'sales_floor'].includes(platform) || !hasPlatform(user, platform)) {
+        return res.status(403).json({ success: false, message: 'This account does not have access to this platform.' });
+      }
 
       // Update last login
       user.last_login_at = new Date();
       await user.save();
 
-      const token = generateToken(user);
+      const token = generateToken(user, platform);
 
       // Audit
       await AuditEvent.create({
@@ -126,6 +131,7 @@ router.post(
 
       user.password_hash = await User.hashPassword(req.body.new_password);
       user.must_change_password = false;
+      user.auth_version = (user.auth_version || 0) + 1;
       await user.save();
 
       return res.json({ success: true, message: 'Password updated.' });
@@ -143,7 +149,8 @@ router.get('/crm-session', authenticate, async (req, res, next) => {
     if (!user) {
       return res.status(401).json({ success: false, message: 'User not found or unauthenticated.' });
     }
-    const token = generateToken(user);
+    if (!hasPlatform(user, 'crm')) return res.status(403).json({ success: false, message: 'Sales CRM access is not assigned to this account.' });
+    const token = generateToken(user, 'crm');
     return res.json({
       success: true,
       data: {
