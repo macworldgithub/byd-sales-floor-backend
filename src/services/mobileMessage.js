@@ -51,7 +51,7 @@ function normalizeAustralianPhone(phone) {
 async function getConfig() {
   const envUsername = process.env.MOBILEMESSAGE_USERNAME || '';
   const envPassword = process.env.MOBILEMESSAGE_PASSWORD || process.env.MOBILEMESSAGE_API_KEY || '';
-  const envSender = process.env.MOBILEMESSAGE_SENDER_ID || process.env.MOBILEMESSAGE_FROM || '+61468104118';
+  const envSender = process.env.MOBILEMESSAGE_SENDER_ID || process.env.MOBILEMESSAGE_FROM || 'HARMONY';
   const apiUrl = (process.env.MOBILEMESSAGE_API_URL || DEFAULT_BASE_URL).replace(/\/v1\/messages\/?$/, '').replace(/\/+$/, '');
   const envSimulation = process.env.MOBILEMESSAGE_SIMULATION_MODE;
 
@@ -71,7 +71,7 @@ async function getConfig() {
       return {
         username: setting.username || '',
         password: setting.apiKey || '',
-        senderId: setting.senderId || envSender,
+        senderId: process.env.MOBILEMESSAGE_SENDER_ID || setting.senderId || envSender,
         apiUrl,
         simulationMode: envSimulation === undefined ? setting.simulationMode === true : envSimulation === 'true',
       };
@@ -112,7 +112,8 @@ async function sendSms({ to, message, sender, customRef, idempotencyKey, request
   }
 
   const config = await getConfig();
-  const effectiveSender = sender || config.senderId || '+61468104118';
+  // An explicit deployment sender applies to every send, including legacy caller overrides.
+  const effectiveSender = process.env.MOBILEMESSAGE_SENDER_ID || sender || config.senderId || 'HARMONY';
   const key = idempotencyKey || (crypto.randomUUID ? crypto.randomUUID() : `byd-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`);
 
   // Simulation must be explicitly enabled; missing credentials are a send failure.
