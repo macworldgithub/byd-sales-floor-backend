@@ -1906,7 +1906,7 @@ const crmService = {
 
     const data = stockDocs.map((doc) => {
       const stockId = doc.stock ? `VY-VIC-${doc.stock}` : String(doc.identifier || doc.legacyId || doc._id);
-      const matchingHold = activeHolds.find((h) => h.vy_stock_id === stockId || h.vin === doc.registration?.vin);
+      const matchingHold = activeHolds.find((h) => h.vy_stock_id === stockId || (h.vin && h.vin === doc.registration?.vin));
 
       return {
         stock_id: stockId,

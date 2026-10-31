@@ -275,7 +275,7 @@ test("inventory reads preserve unknown prices, capacity and actual sold status i
         ? inventory
         : {
             find() {
-              return cursor([]);
+              return cursor([{ vy_stock_id: 'a-different-stock-without-vin' }]);
             },
           };
     },
