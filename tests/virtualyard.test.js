@@ -189,3 +189,47 @@ test('POST session-file failures remain uncertain and cannot be treated as a saf
   });
   await assert.rejects(session.request('/save/save.php', { method: 'POST', body: 'x=1' }), { mayHaveCreated: true, code: 'VY_SESSION_STORAGE' });
 });
+
+test('empty driver search fetches current customers and removes no-results controls and duplicates', async () => {
+  const calls = [];
+  const service = load('virtualyard.js', { './virtualyardSession': { async json(resource) {
+    calls.push(new URL('https://example.com' + resource));
+    return [{ customerId: 7, name: 'Driver', mobile: '0400000000' }, { customerId: 7, name: 'Driver' },
+      { name: '[ No Results ]', value: '*', noResultsAction: 'do not run', sql: 'private diagnostic' }, { customerId: null, name: 'Invalid' }];
+  } }, './accountAccess': require('../src/services/accountAccess') });
+  const result = await service.lookupPage('customers');
+  assert.equal(calls[0].searchParams.get('customers'), '');
+  assert.equal(calls[0].searchParams.get('limit'), '1001');
+  assert.equal(result.data.length, 1);
+  assert.equal(result.data[0].id, '7');
+  assert.equal(result.hasMore, false);
+  assert.ok(!JSON.stringify(result).includes('private diagnostic'));
+});
+
+test('live lookup exposes additional matches and loads records beyond the first thousand', async () => {
+  const calls = [];
+  let records = Array.from({ length: 1050 }, (_, i) => ({ userId: i + 1, name: `Salesperson ${i + 1}` }));
+  const service = load('virtualyard.js', { './virtualyardSession': { async json(resource) {
+    const url = new URL('https://example.com' + resource);
+    calls.push(url.searchParams.get('limit'));
+    return records.slice(0, Number(url.searchParams.get('limit')));
+  } }, './accountAccess': require('../src/services/accountAccess') });
+  const first = await service.lookupPage('users', '', {}, 1000);
+  assert.equal(first.data.length, 1000); assert.equal(first.hasMore, true);
+  const complete = await service.lookupPage('users', '', {}, 2000);
+  assert.equal(complete.data.length, 1050); assert.equal(complete.hasMore, false);
+  records = [{ userId: 9000, name: 'New salesperson' }];
+  const updated = await service.lookupPage('users');
+  assert.equal(updated.data[0].id, '9000');
+  assert.deepEqual(calls, ['1001', '2001', '1001']);
+});
+
+test('no-match drivers return an empty list and invalid limits fail before an upstream request', async () => {
+  let calls = 0;
+  const service = load('virtualyard.js', { './virtualyardSession': { async json() {
+    calls++; return [{ name: '[ No Results ]', value: '*', noResultsAction: 'add customer' }];
+  } }, './accountAccess': require('../src/services/accountAccess') });
+  assert.equal((await service.lookupPage('customers', 'unmatched name')).data.length, 0);
+  for (const limit of [-1, 0, 100001, 'bad', 1.5]) await assert.rejects(service.lookupPage('customers', '', {}, limit), { statusCode: 400 });
+  assert.equal(calls, 1);
+});

@@ -6,6 +6,13 @@ through both `/api/crm/appointments` and `/api/appointments`. Other appointment 
 remain local. Changes to an existing appointment are currently local; this integration
 creates bookings and does not update or delete existing Virtual Yard bookings.
 
+Search fields start empty. Opening the form or using Refresh calls the live API;
+typing searches current upstream records. Driver lookup also works with no query.
+The lookup API returns `hasMore` and supports `limit` (default 1,000). The form
+offers Load more for large lists, so additional matches are accessible rather than
+silently truncated at Virtual Yard's default 100 records. No-results controls are
+excluded. Responses use `Cache-Control: no-store`.
+
 ## Session configuration
 
 Set `VIRTUALYARD_COOKIE=PHPSESSID=...` in the backend `.env`, or use **CRM Settings →

@@ -18,13 +18,21 @@ async function metadata(user = {}) {
 }
 const KEYS = { vehicles: 'vehicles-demonstrator-adv', users: 'users', customers: 'customers' };
 const LOCAL_STATUS = { P: 'Pending', C: 'Confirmed', I: 'In-Progress', F: 'Completed', R: 'Rescheduled', X: 'Cancelled', M: 'No Show' };
-async function lookup(kind, query = '', user = {}) {
+async function lookupRows(kind, query, limit) {
   if (!Object.hasOwn(KEYS, kind)) fail(400, 'Unsupported Virtual Yard lookup.');
   const key = KEYS[kind];
   const q = String(query).trim().slice(0, 120);
-  if (kind === 'customers' && q.length < 2) return [];
-  const rows = await session.json(`/ajax/JSON/lookup.php?${new URLSearchParams({ key, [key]: q, categoryId: '0' })}`);
+  const rows = await session.json(`/ajax/JSON/lookup.php?${new URLSearchParams({ key, [key]: q, categoryId: '0', limit: String(limit) })}`, { timeoutMs: limit > 10000 ? 60000 : 20000 });
   if (!Array.isArray(rows)) fail(502, 'Invalid Virtual Yard lookup response.');
+  return rows;
+}
+
+async function normalizeLookup(kind, rows, user) {
+  const idKey = { vehicles: 'vehicleId', users: 'userId', customers: 'customerId' }[kind];
+  // A no-match response contains a UI action and SQL diagnostic, not a real record.
+  rows = [...new Map(rows.filter(row => row && /^\d+$/.test(String(row[idKey] || '')) && Number(row[idKey]) > 0 &&
+    typeof (row.name || row.value) === 'string' && (row.name || row.value).trim() && !row.noResultsAction)
+    .map(row => [String(row[idKey]), row])).values()];
   if (kind === 'vehicles') {
     const { yards } = await metadata(user);
     return rows.filter(row => yards.some(yard => yard.id === String(row.locationId))).map(row => ({
@@ -33,6 +41,26 @@ async function lookup(kind, query = '', user = {}) {
   }
   return rows.map(row => ({ id: String(kind === 'users' ? row.userId : row.customerId), name: row.name || row.value,
     ...(kind === 'customers' ? { phone: row.mobile || row.phone || '' } : {}) }));
+}
+
+async function lookup(kind, query = '', user = {}) {
+  // Used to validate a selected booking against current upstream matches.
+  let limit = 1000;
+  for (;;) {
+    const rows = await lookupRows(kind, query, limit);
+    if (rows.length < limit) return normalizeLookup(kind, rows, user);
+    if (limit >= 50000) fail(502, 'Virtual Yard returned too many matches. Enter a more specific search.');
+    limit = Math.min(limit * 2, 50000);
+  }
+}
+
+async function lookupPage(kind, query = '', user = {}, requestedLimit = 1000) {
+  const limit = Number(requestedLimit);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 50000) fail(400, 'Invalid Virtual Yard lookup limit.');
+  // Offset/page are ignored upstream. Request a live prefix plus one record to
+  // expose whether more matches exist, instead of silently hiding them at 100.
+  const rows = await lookupRows(kind, query, limit + 1);
+  return { data: await normalizeLookup(kind, rows.slice(0, limit), user), hasMore: rows.length > limit, limit };
 }
 
 function melbourneTime(value) {
@@ -130,4 +158,4 @@ async function sync(appointment, collection) {
   return collection.findOne({ _id: appointment._id });
 }
 
-module.exports = { metadata, lookup, prepare, payload, savedId, sync, melbourneTime, optionsFromForm, validateRetry, LOCAL_STATUS };
+module.exports = { metadata, lookup, lookupPage, prepare, payload, savedId, sync, melbourneTime, optionsFromForm, validateRetry, LOCAL_STATUS };

@@ -52,7 +52,7 @@ class VirtualyardSession {
     this.persist([...jar].map(([name, value]) => `${name}=${value}`).join('; '));
   }
 
-  async request(resource, { method = 'GET', body, cookie } = {}) {
+  async request(resource, { method = 'GET', body, cookie, timeoutMs = 20000 } = {}) {
     const activeCookie = cookie === undefined ? this.readCookie() : cookie;
     if (!/(?:^|;\s*)PHPSESSID=[^;\s]+/.test(activeCookie)) {
       throw sessionError('Connect a Virtual Yard session in CRM Settings first.', 'VY_NOT_CONNECTED');
@@ -62,7 +62,7 @@ class VirtualyardSession {
     let response;
     try {
       response = await this.fetchImpl(url, {
-        method, body, redirect: 'manual', signal: AbortSignal.timeout(20000),
+        method, body, redirect: 'manual', signal: AbortSignal.timeout(timeoutMs),
         headers: { Accept: '*/*', Cookie: activeCookie, Referer: REFERER, 'X-Requested-With': 'XMLHttpRequest',
           ...(body ? { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' } : {}) },
       });
