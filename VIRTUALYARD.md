@@ -63,6 +63,28 @@ Do not generate a new key when retrying an uncertain HTTP response. Sync metadat
 cannot be overwritten through generic appointment PATCH endpoints. Retry uses
 `POST /api/crm/appointments/:id/virtualyard-retry` and remains site-scoped.
 
+## Hourly snapshot import
+
+The hourly scraper calls `scripts/virtualyard/upsert-both.js` in this repository.
+Only the `virtual-yard` and `byd-sales-floor-backend` checkouts are required on the
+server. The importer uses `LEAD_CENTER_MONGO_URI` from this backend's `.env` and
+does not initialize the API or its Delivery Centre connection.
+
+Its standalone validation models retain the original import defaults and mapping
+behavior, while updates preserve stable IDs, staff notes, consent, and CRM booking
+references. A live import requires a private EJSON backup and verifies that a
+repeat import would make no changes. No extra package dependencies are needed.
+
+To inspect a snapshot without writing to the database:
+
+```sh
+npm run import:virtualyard -- .runtime/virtualyard/both.json --dry-run
+```
+
+The systemd hourly job handles scraping, validation, backups and publishing the
+snapshot. See `../virtual-yard/HOURLY_SYNC.md` for installation and service commands.
+The snapshot stays at `.runtime/virtualyard/both.json`.
+
 ## Verification
 
 Run `node --test tests/*.test.js` in the backend and
