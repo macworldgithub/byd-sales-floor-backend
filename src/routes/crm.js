@@ -16,6 +16,22 @@ router.use(authenticate);
 // Site-locked users (e.g. a single dealership login) can only ever see their own site's data
 router.use(enforceSiteLock);
 
+// Read surfaces use independent server pagination instead of the dashboard's cache.
+router.get('/leads', async (req, res, next) => {
+  try {
+    const { leadConn } = require('../db');
+    res.set('Cache-Control', 'no-store');
+    res.json(await require('../services/crmBrowsing').leads(leadConn.db, req.query, req.user));
+  } catch (error) { next(error); }
+});
+router.get('/calendar', async (req, res, next) => {
+  try {
+    const { leadConn, deliveryConn } = require('../db');
+    res.set('Cache-Control', 'no-store');
+    res.json(await require('../services/crmBrowsing').calendar({ lead: leadConn.db, panel: deliveryConn.db }, req.query, req.user));
+  } catch (error) { next(error); }
+});
+
 // ─── 1. Customers 360 & Lookup (§5.1, AC-1) ──────────────────────────────────
 router.get('/customers/export-csv', async (req, res, next) => {
   try {
@@ -256,6 +272,11 @@ router.get('/opportunities/export-csv', async (req, res, next) => {
 
 router.get('/opportunities', async (req, res, next) => {
   try {
+    if (req.query.browse === 'true') {
+      const { deliveryConn } = require('../db');
+      res.set('Cache-Control', 'no-store');
+      return res.json(await require('../services/crmBrowsing').pipeline(deliveryConn.db, req.query, req.user));
+    }
     const result = await crmService.getOpportunities(req.query);
     res.json({
       success: true,
@@ -337,6 +358,7 @@ router.post('/opportunities/:id/mark-sold', async (req, res, next) => {
       message: result.deliverySyncSuccess
         ? 'Deal sold: VY order confirmed, Sales Log created, Delivery client upserted'
         : 'Deal sold: VY order confirmed, Sales Log created, Delivery client sync pending',
+      data: result,
       ...result,
     });
   } catch (err) {
