@@ -16,6 +16,54 @@ router.use(authenticate);
 // Site-locked users (e.g. a single dealership login) can only ever see their own site's data
 router.use(enforceSiteLock);
 
+router.get('/bootstrap', async (req, res, next) => {
+  try {
+    const { leadConn, deliveryConn, ensureDbConnected } = require('../db');
+    await ensureDbConnected();
+    res.set('Cache-Control', 'no-store');
+    res.json({ success: true, data: await require('../services/crmLive').bootstrap({ lead: leadConn.db, panel: deliveryConn.db }, req.query, req.user) });
+  } catch (error) { next(error); }
+});
+router.get('/reports/summary', async (req, res, next) => {
+  try {
+    const { deliveryConn, ensureDbConnected } = require('../db');
+    await ensureDbConnected();
+    res.set('Cache-Control', 'no-store');
+    res.json({ success: true, data: await require('../services/crmLive').reports(deliveryConn.db, req.query, req.user) });
+  } catch (error) { next(error); }
+});
+router.post('/lead-requests', async (req, res, next) => {
+  try {
+    const { deliveryConn, ensureDbConnected } = require('../db');
+    await ensureDbConnected();
+    const record = { requestedBy: req.user.id, consultant: req.user.name, site: req.user.locked_site || req.body.site || null, status: 'pending', createdAt: new Date() };
+    const saved = await deliveryConn.db.collection('leadrequests').insertOne(record);
+    res.status(201).json({ success: true, data: { id: String(saved.insertedId), ...record } });
+  } catch (error) { next(error); }
+});
+router.get('/audit', async (req, res, next) => {
+  try {
+    const { deliveryConn, ensureDbConnected } = require('../db');
+    await ensureDbConnected();
+    res.set('Cache-Control', 'no-store');
+    res.json({ success: true, ...await require('../services/crmLive').audit(deliveryConn.db, req.query, req.user) });
+  } catch (error) { next(error); }
+});
+router.get('/settings/governance', async (req, res, next) => {
+  try {
+    const { deliveryConn, ensureDbConnected } = require('../db');
+    await ensureDbConnected();
+    res.json({ success: true, data: await require('../services/crmLive').settings(deliveryConn.db) });
+  } catch (error) { next(error); }
+});
+router.post('/settings/governance', requireRole('sales_manager', 'site_admin', 'super_admin'), async (req, res, next) => {
+  try {
+    const { deliveryConn, ensureDbConnected } = require('../db');
+    await ensureDbConnected();
+    res.json({ success: true, data: await require('../services/crmLive').saveSettings(deliveryConn.db, req.body, req.user) });
+  } catch (error) { next(error); }
+});
+
 // Read surfaces use independent server pagination instead of the dashboard's cache.
 router.get('/leads', async (req, res, next) => {
   try {
@@ -215,7 +263,7 @@ router.post('/customers/:id/notes', async (req, res, next) => {
   try {
     const note = await crmService.addTimelineNote(req.params.id, {
       ...req.body,
-      author: req.body.author || req.user?.name || 'Alex Rivers',
+      author: req.body.author || req.user?.name || '',
     });
     res.status(201).json({ success: true, message: 'Note added to unified timeline', data: note });
   } catch (err) {
@@ -350,7 +398,7 @@ router.post('/opportunities/:id/mark-sold', async (req, res, next) => {
   try {
     const payload = {
       ...req.body,
-      primary_salesperson: req.body.primary_salesperson || req.user?.name || 'Alex Rivers',
+      primary_salesperson: req.body.primary_salesperson || req.user?.name || '',
     };
     const result = await crmService.markSold(req.params.id, payload);
     res.status(200).json({
@@ -410,7 +458,7 @@ router.post('/allocations/check-sla', async (req, res, next) => {
 
 router.post('/allocations/:id/accept', async (req, res, next) => {
   try {
-    const consultantName = req.body.consultantName || req.user?.name || 'Alex Rivers';
+    const consultantName = req.body.consultantName || req.user?.name || '';
     const accepted = await crmService.acceptAllocation(req.params.id, consultantName);
     res.json({ success: true, message: 'Allocation SLA accepted', data: accepted });
   } catch (err) {
@@ -450,7 +498,7 @@ router.get('/vy/stock', async (req, res, next) => {
 router.post('/vy/hold', async (req, res, next) => {
   try {
     const { stockId, opportunityId, consultantName } = req.body;
-    const rep = consultantName || req.user?.name || 'Alex Rivers';
+    const rep = consultantName || req.user?.name || '';
     const held = await crmService.holdStock(stockId, opportunityId, rep);
     res.json({ success: true, message: 'Stock reserved for 48 hours', data: held });
   } catch (err) {
@@ -597,8 +645,8 @@ router.get('/boards/me', async (req, res, next) => {
   try {
     const data = await crmService.getBoardMe({
       ...req.query,
-      consultant: req.query.consultant || req.user?.name || 'Alex Rivers',
-    });
+      consultant: req.user?.name || '',
+    }, req.user);
     res.json({ success: true, data });
   } catch (err) {
     next(err);
@@ -607,7 +655,7 @@ router.get('/boards/me', async (req, res, next) => {
 
 router.get('/boards/team', requireRole('manager', 'sales_manager', 'site_admin', 'super_admin', 'admin', 'bdc'), async (req, res, next) => {
   try {
-    const data = await crmService.getBoardTeam(req.query);
+    const data = await crmService.getBoardTeam(req.query, req.user);
     res.json({ success: true, data });
   } catch (err) {
     next(err);
@@ -616,7 +664,7 @@ router.get('/boards/team', requireRole('manager', 'sales_manager', 'site_admin',
 
 router.get('/targets', async (req, res, next) => {
   try {
-    const targets = await crmService.getTargets(req.query);
+    const targets = await crmService.getTargets(req.query, req.user);
     res.json({ success: true, data: targets });
   } catch (err) {
     next(err);
@@ -625,7 +673,7 @@ router.get('/targets', async (req, res, next) => {
 
 router.post('/targets', requireRole('manager', 'sales_manager', 'site_admin', 'super_admin', 'admin'), async (req, res, next) => {
   try {
-    const updated = await crmService.updateTarget(req.body);
+    const updated = await crmService.updateTarget(req.body, req.user);
     res.json({ success: true, message: 'Target quota saved to database', data: updated });
   } catch (err) {
     next(err);
@@ -647,7 +695,7 @@ router.post('/customers/:id/calls', async (req, res, next) => {
   try {
     const callLog = await crmService.logPhoneCall(req.params.id, {
       ...req.body,
-      author: req.body.author || req.user?.name || 'Alex Rivers',
+      author: req.body.author || req.user?.name || '',
     });
     res.status(201).json({ success: true, message: 'Phone call logged to timeline', data: callLog });
   } catch (err) {
