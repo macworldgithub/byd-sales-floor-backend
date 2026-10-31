@@ -9,6 +9,8 @@ RUN npm ci --only=production
 
 COPY src/ ./src/
 
+RUN mkdir -p /app/.runtime && chown node:node /app/.runtime && chmod 700 /app/.runtime
+
 ENV NODE_ENV=production
 ENV PORT=4003
 

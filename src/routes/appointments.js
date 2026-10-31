@@ -106,11 +106,17 @@ router.post(
         bookedBy: req.body.bookedBy || 'Agent',
       };
 
-      const appointment = await Appointment.create(apptData);
+      // Validate the local model before reserving/submitting a remote booking.
+      const candidate = new Appointment(apptData);
+      await candidate.validate();
+      const { appointment, reused } = await require('../services/appointmentBooking').book(
+        candidate.toObject(), req.body, req.user, Appointment.collection
+      );
+      if (reused) return res.status(200).json({ success: true, data: appointment });
 
       // Update lead appointment count if linked
       if (appointment.leadId) {
-        await Lead.findByIdAndUpdate(appointment.leadId, {
+        await Lead.findOneAndUpdate(leadReferenceFilter(appointment.leadId), {
           $inc: { 'leadStats.appointmentCount': 1 },
           $set: { stage: 'TEST DRIVE BOOKED' },
         });
@@ -290,6 +296,7 @@ router.get('/:id', async (req, res, next) => {
 // ─── PATCH /api/appointments/:id (§5.2 Show / No-Show Closeout) ─────────────
 router.patch('/:id', async (req, res, next) => {
   try {
+    require('../services/appointmentBooking').assertBookingPatch(req.body);
     delete req.body._id;
     const appt = await Appointment.findByIdAndUpdate(
       req.params.id,

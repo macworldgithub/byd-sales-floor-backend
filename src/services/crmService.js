@@ -3867,8 +3867,11 @@ const crmService = {
     const custColl = deliveryConn.db.collection('customers');
     const now = new Date();
 
-    const consultant = data.consultantName || data.consultant || user.name || 'Alex Rivers';
-    const site = data.site || data.dealership || user.site || 'Fairfield';
+    const consultant = data.consultantName || data.consultant || user.name || user.email;
+    const site = user.locked_site || data.site || data.dealership || user.site || 'Fairfield';
+    if (!data.when || Number.isNaN(new Date(data.when).getTime())) {
+      throw Object.assign(new Error('A valid appointment time is required.'), { statusCode: 400 });
+    }
 
     const apptDoc = {
       prospectName: data.prospectName || data.customer_name || 'Customer',
@@ -3885,6 +3888,7 @@ const crmService = {
       dealership: site,
       durationMinutes: Number(data.durationMinutes) || 45,
       notes: data.notes || '',
+      loop: data.loop || '',
       leadId: data.leadId || data.lead_prospect_id || null,
       customer_id: data.customer_id || null,
       opportunity_id: data.opportunity_id || null,
@@ -3892,9 +3896,10 @@ const crmService = {
       updatedAt: now,
     };
 
-    const result = await apptColl.insertOne(apptDoc);
-    apptDoc._id = result.insertedId;
-    apptDoc.id = String(result.insertedId);
+    const booking = await require('./appointmentBooking').book(apptDoc, data, user, apptColl);
+    Object.assign(apptDoc, booking.appointment);
+    apptDoc.id = String(apptDoc._id);
+    if (booking.reused) return apptDoc;
 
     // If linked to customer or opportunity, transition stage to 'Appointment'
     if (data.opportunity_id) {
@@ -3931,6 +3936,7 @@ const crmService = {
   },
 
   async updateAppointment(id, patch = {}, user = {}) {
+    require('./appointmentBooking').assertBookingPatch(patch);
     await ensureDbConnected();
     const apptColl = leadConn.db.collection('appointments');
     const tlColl = deliveryConn.db.collection('timelineevents');

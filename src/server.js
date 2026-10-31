@@ -145,6 +145,7 @@ app.use('/api/stats', require('./routes/stats'));
 app.use('/api/search', require('./routes/search'));
 app.use('/api/webhooks', require('./routes/webhooks'));
 app.use('/api/crm', require('./routes/crm'));
+app.use('/api/virtualyard', require('./routes/virtualyard'));
 app.use('/api/sequences', require('./routes/sequences'));
 app.use('/api/staff', require('./routes/staff'));
 
@@ -163,6 +164,7 @@ let holdExpiryTimer = null;
 let nightlyReconcileTimer = null;
 
 if (process.env.NODE_ENV !== 'test') {
+  require('./services/virtualyardSession').start();
   // 1. SLA Auto-Escalation Engine
   slaIntervalTimer = setInterval(async () => {
     try {
@@ -209,6 +211,7 @@ if (require.main === module) {
 
 // Handle Graceful Shutdown for PM2 / Docker on VPS
 const handleShutdown = async (signal) => {
+  require('./services/virtualyardSession').stop();
   console.log(`\n🛑 Received ${signal}. Gracefully stopping BYD Sales Floor API...`);
   if (slaIntervalTimer) clearInterval(slaIntervalTimer);
   if (holdExpiryTimer) clearInterval(holdExpiryTimer);

@@ -653,6 +653,23 @@ router.post('/appointments', async (req, res, next) => {
   }
 });
 
+// Only explicit failures are replayable. 'sending'/'unknown' may already exist remotely.
+router.post('/appointments/:id/virtualyard-retry', async (req, res, next) => {
+  try {
+    const { leadConn } = require('../db');
+    const { ObjectId } = require('mongoose').mongo;
+    if (!ObjectId.isValid(req.params.id)) return res.status(400).json({ success: false, message: 'Invalid appointment ID.' });
+    const collection = leadConn.db.collection('appointments');
+    const appointment = await collection.findOne({ _id: new ObjectId(req.params.id) });
+    if (!appointment || !siteMatches(appointment.site || appointment.dealership, req.user.locked_site)) return res.status(404).json({ success: false, message: 'Appointment not found.' });
+    if (!['pending', 'failed'].includes(appointment.virtualyardSync?.state)) return res.status(409).json({ success: false, message: 'This booking cannot be retried safely. Check Virtual Yard for an existing booking.' });
+    const vy = require('../services/virtualyard');
+    await vy.validateRetry(appointment, req.user);
+    const data = await vy.sync(appointment, collection);
+    res.json({ success: true, data });
+  } catch (error) { next(error); }
+});
+
 router.patch('/appointments/:id', async (req, res, next) => {
   try {
     const updated = await crmService.updateAppointment(req.params.id, req.body, req.user);
