@@ -8,9 +8,9 @@ const inventorySchema = new mongoose.Schema(
     model: { type: String, default: "" },
     paint: { type: String, default: "" },
     location: { type: String, default: "" },
+    orderYard: { type: String, default: "" },
     status: {
       type: String,
-      enum: ["Available", "In Transit", "Sold", "Unavailable", "InStock"],
       default: "Available",
     },
     price: { type: String, default: "" },
@@ -19,7 +19,6 @@ const inventorySchema = new mongoose.Schema(
     // ── Platform field ──────────────────────────────────────────────────────
     platform: {
       type: String,
-      enum: ["manual", "autogate", "virtualyard", "dealer_studio"],
       default: "manual",
     },
 

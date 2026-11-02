@@ -11,9 +11,9 @@ const inventorySchema = new mongoose.Schema(
     model: { type: String, default: '' },
     paint: { type: String, default: '' },
     location: { type: String, default: '' },
+    orderYard: { type: String, default: '' },
     status: {
       type: String,
-      enum: ['Available', 'In Transit', 'Sold', 'Unavailable', 'InStock'],
       default: 'Available',
     },
     price: { type: String, default: '' },
@@ -22,7 +22,6 @@ const inventorySchema = new mongoose.Schema(
     // ── Platform field ──────────────────────────────────────────────────
     platform: {
       type: String,
-      enum: ['manual', 'autogate', 'virtualyard', 'dealer_studio'],
       default: 'manual',
     },
 
@@ -86,13 +85,36 @@ const inventorySchema = new mongoose.Schema(
 
     onCarsalesNetwork: { type: Boolean, default: null },
     sellerIdentifier: { type: String, default: null },
+
+    // Shirley Inventory extended data
+    shirleyData: {
+      inStockDate: { type: String, default: null },
+      daysOfInventory: { type: Number, default: 0 },
+      deliveryDate: { type: String, default: null },
+      delivered: { type: String, default: null },
+      allocationDate: { type: String, default: null },
+      salesConsultant: { type: String, default: null },
+      paymentTermDue: { type: String, default: null },
+      dueDate: { type: String, default: null },
+      inBoundDate: { type: String, default: null },
+      outBoundStore: { type: String, default: null },
+      poNumber: { type: String, default: null },
+      registrationDate: { type: String, default: null },
+      notes: { type: String, default: null },
+      buildMonth: { type: String, default: null },
+      sources: [{ type: String }],
+    },
   },
   { timestamps: true }
 );
 
+inventorySchema.index({ 'registration.vin': 1 }, { sparse: true });
 inventorySchema.index({ identifier: 1 }, { sparse: true });
 inventorySchema.index({ stock: 1 }, { sparse: true });
+inventorySchema.index({ location: 1 });
+inventorySchema.index({ orderYard: 1 });
 inventorySchema.index({ status: 1 });
+inventorySchema.index({ platform: 1 });
 inventorySchema.index({ 'specifications.model': 1 });
 
 module.exports = leadConn.model('Inventory', inventorySchema);

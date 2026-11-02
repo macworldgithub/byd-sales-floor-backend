@@ -1,8 +1,11 @@
 /**
  * inventory.js – Lead Centre Inventory routes (read-only from Sales Floor)
  *
+ * GET /api/inventory/filters list distinct filter options
  * GET /api/inventory        list inventory with filters
  * GET /api/inventory/:id    single inventory item
+ * POST /api/inventory/:id/soft-hold
+ * POST /api/inventory/:id/release-hold
  */
 const express = require('express');
 const Inventory = require('../models/lead/Inventory');
@@ -11,51 +14,267 @@ const { authenticate } = require('../middleware/auth');
 const router = express.Router();
 router.use(authenticate);
 
+function escapeRegex(str) {
+  if (typeof str !== 'string') return '';
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function buildLocationQuery(locVal) {
+  if (!locVal || ['all', 'all locations', 'all yards', 'all sites'].includes(String(locVal).toLowerCase().trim())) {
+    return null;
+  }
+  const cleanVal = String(locVal).replace(/^BYD\s+/i, '').replace(/^DENZA\s+/i, '').trim();
+  const escaped = escapeRegex(cleanVal);
+  const rawEscaped = escapeRegex(String(locVal).trim());
+
+  const regexes = [
+    new RegExp(escaped, 'i'),
+    new RegExp(rawEscaped, 'i'),
+  ];
+  if (/caroline/i.test(cleanVal)) {
+    regexes.push(/caroline/i);
+    regexes.push(/\bcs\b/i);
+  }
+  if (/melbourne/i.test(cleanVal)) {
+    regexes.push(/melbourne/i);
+    regexes.push(/\bcbd\b/i);
+  }
+  if (/fairfield/i.test(cleanVal)) {
+    regexes.push(/fairfield/i);
+    regexes.push(/\bffd\b/i);
+  }
+  if (/nunawading/i.test(cleanVal)) {
+    regexes.push(/nunawading/i);
+    regexes.push(/\bnwd\b/i);
+  }
+  if (/wodonga/i.test(cleanVal)) {
+    regexes.push(/wodonga/i);
+    regexes.push(/\bwdg\b/i);
+  }
+  if (/doncaster/i.test(cleanVal)) {
+    regexes.push(/doncaster/i);
+    regexes.push(/\bdc\b/i);
+  }
+  if (/holding/i.test(cleanVal)) {
+    regexes.push(/holding/i);
+    regexes.push(/derrimut/i);
+  }
+
+  const orClauses = [];
+  for (const reg of regexes) {
+    orClauses.push({ location: reg });
+    orClauses.push({ orderYard: reg });
+    orClauses.push({ 'shirleyData.outBoundStore': reg });
+  }
+  return { $or: orClauses };
+}
+
+function buildStatusQuery(statusVal) {
+  if (!statusVal || ['all', 'all statuses', 'all status'].includes(String(statusVal).toLowerCase().trim())) {
+    return null;
+  }
+  const s = String(statusVal).trim().toLowerCase();
+  if (s === 'available' || s === 'in stock' || s === 'instock') {
+    return {
+      $or: [
+        { status: { $regex: /^in\s*stock$/i } },
+        { status: /^available$/i },
+        { itemStatus: /^instock$/i },
+      ]
+    };
+  }
+  if (s === 'delivered') {
+    return { status: { $regex: /^deliver/i } };
+  }
+  if (s === 'sold') {
+    return { status: { $regex: /^sold$/i } };
+  }
+  if (s === 'in transit') {
+    return {
+      $or: [
+        { status: { $regex: /^in\s*transit$/i } },
+        { itemStatus: { $regex: /^in\s*transit$/i } },
+      ]
+    };
+  }
+  if (s === 'demo') {
+    return {
+      $or: [
+        { status: { $regex: /^demo$/i } },
+        { condition: /^demo$/i },
+      ]
+    };
+  }
+  if (s === 'display') {
+    return { status: { $regex: /^display$/i } };
+  }
+  if (s === 'damage' || s === 'damaged') {
+    return { status: { $regex: /^damage/i } };
+  }
+  if (s === 'on hold' || s === 'on-hold' || s === 'held') {
+    return { status: { $regex: /^on[- ]?hold$|^held$/i } };
+  }
+  if (s === 'allocated') {
+    return { status: { $regex: /^allocated$/i } };
+  }
+  return { status: { $regex: new RegExp(`^${escapeRegex(statusVal)}$`, 'i') } };
+}
+
+// ─── GET /api/inventory/filters ─────────────────────────────────────────────
+router.get('/filters', async (req, res, next) => {
+  try {
+    const [locations, orderYards, models] = await Promise.all([
+      Inventory.distinct('location'),
+      Inventory.distinct('orderYard'),
+      Inventory.distinct('specifications.model'),
+    ]);
+
+    const cleanLocs = Array.from(new Set([...locations, ...orderYards]))
+      .filter(l => l && l !== '#N/A' && l !== '_' && l.length > 1)
+      .sort();
+
+    const cleanModels = Array.from(new Set(models))
+      .filter(m => m && m.length > 1)
+      .sort();
+
+    const statuses = [
+      'In Stock',
+      'Delivered',
+      'Sold',
+      'In Transit',
+      'Demo',
+      'Display',
+      'On Hold',
+      'Damage',
+      'Allocated',
+    ];
+
+    res.json({
+      success: true,
+      data: {
+        locations: cleanLocs,
+        statuses,
+        models: cleanModels,
+        platforms: ['shirley', 'virtualyard', 'autogate', 'dealer_studio', 'manual'],
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // ─── GET /api/inventory ─────────────────────────────────────────────────────
 router.get('/', async (req, res, next) => {
   try {
     const {
-      page = 1,
-      limit = 50,
+      page,
+      limit,
+      paginated,
       status,
       model,
       condition,
       platform,
+      location,
+      yard,
+      dealer,
+      site,
       q,
-      sort = '-lastSeen',
+      sort = '-updatedAt -createdAt',
     } = req.query;
 
-    const filter = {};
-    if (status) filter.status = status;
-    if (condition) filter.condition = condition;
-    if (platform) filter.platform = platform;
-    if (model) {
-      filter.$or = [
-        { model: { $regex: model, $options: 'i' } },
-        { 'specifications.model': { $regex: model, $options: 'i' } },
-        { title: { $regex: model, $options: 'i' } },
-      ];
+    const andClauses = [];
+
+    // Model filter
+    if (model && model !== 'all' && model !== 'All Models' && model !== 'All') {
+      const safeModel = escapeRegex(model);
+      andClauses.push({
+        $or: [
+          { model: { $regex: safeModel, $options: 'i' } },
+          { 'specifications.model': { $regex: safeModel, $options: 'i' } },
+          { title: { $regex: safeModel, $options: 'i' } },
+        ],
+      });
     }
+
+    // Status filter
+    const statusQuery = buildStatusQuery(status);
+    if (statusQuery) {
+      andClauses.push(statusQuery);
+    }
+
+    // Yard / Location filter
+    const locVal = location || yard || dealer || site;
+    const locQuery = buildLocationQuery(locVal);
+    if (locQuery) {
+      andClauses.push(locQuery);
+    }
+
+    // Condition filter
+    if (condition && condition !== 'all' && condition !== 'All') {
+      andClauses.push({ condition });
+    }
+
+    // Platform filter
+    if (platform && platform !== 'all' && platform !== 'All') {
+      andClauses.push({ platform });
+    }
+
+    // Free text search
     if (q) {
-      filter.$or = [
-        { stock: { $regex: q, $options: 'i' } },
-        { title: { $regex: q, $options: 'i' } },
-        { 'registration.rego': { $regex: q, $options: 'i' } },
-        { 'registration.vin': { $regex: q, $options: 'i' } },
-      ];
+      const safeQ = escapeRegex(q);
+      andClauses.push({
+        $or: [
+          { stock: { $regex: safeQ, $options: 'i' } },
+          { model: { $regex: safeQ, $options: 'i' } },
+          { paint: { $regex: safeQ, $options: 'i' } },
+          { location: { $regex: safeQ, $options: 'i' } },
+          { orderYard: { $regex: safeQ, $options: 'i' } },
+          { title: { $regex: safeQ, $options: 'i' } },
+          { identifier: { $regex: safeQ, $options: 'i' } },
+          { networkId: { $regex: safeQ, $options: 'i' } },
+          { 'specifications.model': { $regex: safeQ, $options: 'i' } },
+          { 'specifications.colour': { $regex: safeQ, $options: 'i' } },
+          { 'specifications.badge': { $regex: safeQ, $options: 'i' } },
+          { 'specifications.manufacturerColour': { $regex: safeQ, $options: 'i' } },
+          { 'registration.rego': { $regex: safeQ, $options: 'i' } },
+          { 'registration.vin': { $regex: safeQ, $options: 'i' } },
+          { 'shirleyData.salesConsultant': { $regex: safeQ, $options: 'i' } },
+          { 'shirleyData.poNumber': { $regex: safeQ, $options: 'i' } },
+        ],
+      });
     }
 
-    const skip = (Number(page) - 1) * Number(limit);
-    const [items, total] = await Promise.all([
-      Inventory.find(filter).sort(sort).skip(skip).limit(Number(limit)).lean(),
-      Inventory.countDocuments(filter),
-    ]);
+    const filter = andClauses.length > 0 ? (andClauses.length === 1 ? andClauses[0] : { $and: andClauses }) : {};
 
-    return res.json({
-      success: true,
-      data: items,
-      pagination: { total, page: Number(page), limit: Number(limit), pages: Math.ceil(total / Number(limit)) },
-    });
+    const isPaginated = paginated === 'true' || page !== undefined;
+    if (isPaginated) {
+      const pageNum = Math.max(1, parseInt(page) || 1);
+      const pageSize = Math.min(200, Math.max(1, parseInt(limit) || 50));
+      const skip = (pageNum - 1) * pageSize;
+
+      const [items, total] = await Promise.all([
+        Inventory.find(filter).sort(sort).skip(skip).limit(pageSize).lean(),
+        Inventory.countDocuments(filter),
+      ]);
+
+      return res.json({
+        success: true,
+        data: items,
+        total,
+        page: pageNum,
+        totalPages: Math.ceil(total / pageSize) || 1,
+        limit: pageSize,
+        pagination: { total, page: pageNum, limit: pageSize, pages: Math.ceil(total / pageSize) || 1 },
+      });
+    }
+
+    const items = await Inventory.find(filter).sort(sort).lean();
+    res.setHeader('X-Total-Count', items.length);
+    // Support clients expecting raw array or success wrapper
+    if (req.headers['x-requested-with'] === 'XMLHttpRequest' || req.query.format === 'array') {
+      return res.json(items);
+    }
+    return res.json(items);
   } catch (err) {
     next(err);
   }
@@ -72,7 +291,7 @@ router.post('/:id/soft-hold', async (req, res, next) => {
       {
         $set: {
           status: 'Held',
-          'holdDetails.heldBy': req.user.name || req.user.email,
+          'holdDetails.heldBy': req.user?.name || req.user?.email || 'Sales Staff',
           'holdDetails.customerName': customerName || 'Valued Prospect',
           'holdDetails.expiresAt': expiresAt,
           'holdDetails.notes': notes || 'Soft hold placed from Sales Floor',

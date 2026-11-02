@@ -1838,6 +1838,8 @@ const crmService = {
           { yard: { $regex: cleanLoc, $options: 'i' } },
           { site: { $regex: cleanLoc, $options: 'i' } },
           { dealer: { $regex: cleanLoc, $options: 'i' } },
+          { orderYard: { $regex: cleanLoc, $options: 'i' } },
+          { 'shirleyData.outBoundStore': { $regex: cleanLoc, $options: 'i' } },
         ],
       });
     }
