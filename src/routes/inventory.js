@@ -1,8 +1,9 @@
 /**
- * inventory.js – Lead Centre Inventory routes (read-only from Sales Floor)
+ * inventory.js – Lead Centre Inventory routes (High-performance, cached, indexed)
  *
  * GET /api/inventory/filters list distinct filter options
- * GET /api/inventory        list inventory with filters
+ * GET /api/inventory/stats   get aggregated inventory stats
+ * GET /api/inventory        list inventory with filters (lean, paginated)
  * GET /api/inventory/:id    single inventory item
  * POST /api/inventory/:id/soft-hold
  * POST /api/inventory/:id/release-hold
@@ -13,6 +14,19 @@ const { authenticate } = require('../middleware/auth');
 
 const router = express.Router();
 router.use(authenticate);
+
+// ── In-Memory Cache for Stats and Filters (High Performance) ─────────────────
+let cachedFilters = null;
+let cachedFiltersExpires = 0;
+let cachedStats = null;
+let cachedStatsExpires = 0;
+
+function invalidateCache() {
+  cachedFilters = null;
+  cachedFiltersExpires = 0;
+  cachedStats = null;
+  cachedStatsExpires = 0;
+}
 
 function escapeRegex(str) {
   if (typeof str !== 'string') return '';
@@ -120,9 +134,62 @@ function buildStatusQuery(statusVal) {
   return { status: { $regex: new RegExp(`^${escapeRegex(statusVal)}$`, 'i') } };
 }
 
+// ── Fast Cached Summary Stats ────────────────────────────────────────────────
+async function getSummaryStats() {
+  const now = Date.now();
+  if (cachedStats && now < cachedStatsExpires) {
+    return cachedStats;
+  }
+  try {
+    const [raw] = await Inventory.collection.aggregate([
+      {
+        $facet: {
+          total: [{ $count: 'count' }],
+          inStock: [{ $match: { status: { $in: ['In Stock', 'Available', 'InStock'] } } }, { $count: 'count' }],
+          delivered: [{ $match: { status: { $regex: /^deliver/i } } }, { $count: 'count' }],
+          inTransit: [{ $match: { status: { $regex: /^in\s*transit/i } } }, { $count: 'count' }],
+          demo: [{ $match: { $or: [{ status: /^demo$/i }, { condition: /^demo$/i }] } }, { $count: 'count' }],
+          shirley: [{ $match: { platform: 'shirley' } }, { $count: 'count' }],
+          virtualyard: [{ $match: { platform: 'virtualyard' } }, { $count: 'count' }],
+          autogate: [{ $match: { platform: 'autogate' } }, { $count: 'count' }],
+        },
+      },
+    ]).toArray();
+
+    cachedStats = {
+      total: raw.total[0]?.count || 0,
+      inStock: raw.inStock[0]?.count || 0,
+      delivered: raw.delivered[0]?.count || 0,
+      inTransit: raw.inTransit[0]?.count || 0,
+      demo: raw.demo[0]?.count || 0,
+      shirley: raw.shirley[0]?.count || 0,
+      virtualyard: raw.virtualyard[0]?.count || 0,
+      autogate: raw.autogate[0]?.count || 0,
+    };
+    cachedStatsExpires = now + 60 * 1000;
+    return cachedStats;
+  } catch (err) {
+    return {
+      total: 0,
+      inStock: 0,
+      delivered: 0,
+      inTransit: 0,
+      demo: 0,
+      shirley: 0,
+      virtualyard: 0,
+      autogate: 0,
+    };
+  }
+}
+
 // ─── GET /api/inventory/filters ─────────────────────────────────────────────
 router.get('/filters', async (req, res, next) => {
   try {
+    const now = Date.now();
+    if (cachedFilters && now < cachedFiltersExpires) {
+      return res.json({ success: true, data: cachedFilters });
+    }
+
     const [locations, orderYards, models] = await Promise.all([
       Inventory.distinct('location'),
       Inventory.distinct('orderYard'),
@@ -130,11 +197,11 @@ router.get('/filters', async (req, res, next) => {
     ]);
 
     const cleanLocs = Array.from(new Set([...locations, ...orderYards]))
-      .filter(l => l && l !== '#N/A' && l !== '_' && l.length > 1)
+      .filter((l) => l && l !== '#N/A' && l !== '_' && l.length > 1)
       .sort();
 
     const cleanModels = Array.from(new Set(models))
-      .filter(m => m && m.length > 1)
+      .filter((m) => m && m.length > 1)
       .sort();
 
     const statuses = [
@@ -149,15 +216,24 @@ router.get('/filters', async (req, res, next) => {
       'Allocated',
     ];
 
-    res.json({
-      success: true,
-      data: {
-        locations: cleanLocs,
-        statuses,
-        models: cleanModels,
-        platforms: ['shirley', 'virtualyard', 'autogate', 'dealer_studio', 'manual'],
-      },
-    });
+    cachedFilters = {
+      locations: cleanLocs,
+      statuses,
+      models: cleanModels,
+      platforms: ['shirley', 'virtualyard', 'autogate', 'dealer_studio', 'manual'],
+    };
+    cachedFiltersExpires = now + 5 * 60 * 1000;
+    res.json({ success: true, data: cachedFilters });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── GET /api/inventory/stats ───────────────────────────────────────────────
+router.get('/stats', async (req, res, next) => {
+  try {
+    const stats = await getSummaryStats();
+    res.json({ success: true, data: stats });
   } catch (err) {
     next(err);
   }
@@ -167,9 +243,8 @@ router.get('/filters', async (req, res, next) => {
 router.get('/', async (req, res, next) => {
   try {
     const {
-      page,
-      limit,
-      paginated,
+      page = 1,
+      limit = 25,
       status,
       model,
       condition,
@@ -179,7 +254,7 @@ router.get('/', async (req, res, next) => {
       dealer,
       site,
       q,
-      sort = '-updatedAt -createdAt',
+      sort = '-updatedAt',
     } = req.query;
 
     const andClauses = [];
@@ -231,11 +306,6 @@ router.get('/', async (req, res, next) => {
           { orderYard: { $regex: safeQ, $options: 'i' } },
           { title: { $regex: safeQ, $options: 'i' } },
           { identifier: { $regex: safeQ, $options: 'i' } },
-          { networkId: { $regex: safeQ, $options: 'i' } },
-          { 'specifications.model': { $regex: safeQ, $options: 'i' } },
-          { 'specifications.colour': { $regex: safeQ, $options: 'i' } },
-          { 'specifications.badge': { $regex: safeQ, $options: 'i' } },
-          { 'specifications.manufacturerColour': { $regex: safeQ, $options: 'i' } },
           { 'registration.rego': { $regex: safeQ, $options: 'i' } },
           { 'registration.vin': { $regex: safeQ, $options: 'i' } },
           { 'shirleyData.salesConsultant': { $regex: safeQ, $options: 'i' } },
@@ -246,35 +316,34 @@ router.get('/', async (req, res, next) => {
 
     const filter = andClauses.length > 0 ? (andClauses.length === 1 ? andClauses[0] : { $and: andClauses }) : {};
 
-    const isPaginated = paginated === 'true' || page !== undefined;
-    if (isPaginated) {
-      const pageNum = Math.max(1, parseInt(page) || 1);
-      const pageSize = Math.min(200, Math.max(1, parseInt(limit) || 50));
-      const skip = (pageNum - 1) * pageSize;
+    const pageNum = Math.max(1, parseInt(page) || 1);
+    const pageSize = Math.min(100, Math.max(1, parseInt(limit) || 25));
+    const skip = (pageNum - 1) * pageSize;
 
-      const [items, total] = await Promise.all([
-        Inventory.find(filter).sort(sort).skip(skip).limit(pageSize).lean(),
-        Inventory.countDocuments(filter),
-      ]);
+    const [items, total, stats] = await Promise.all([
+      Inventory.find(filter)
+        .sort(sort === '-lastSeen' ? { updatedAt: -1 } : sort)
+        .skip(skip)
+        .limit(pageSize)
+        .lean(),
+      Inventory.countDocuments(filter),
+      getSummaryStats(),
+    ]);
 
-      return res.json({
-        success: true,
-        data: items,
-        total,
-        page: pageNum,
-        totalPages: Math.ceil(total / pageSize) || 1,
-        limit: pageSize,
-        pagination: { total, page: pageNum, limit: pageSize, pages: Math.ceil(total / pageSize) || 1 },
-      });
-    }
+    const totalPages = Math.ceil(total / pageSize) || 1;
 
-    const items = await Inventory.find(filter).sort(sort).lean();
-    res.setHeader('X-Total-Count', items.length);
-    // Support clients expecting raw array or success wrapper
-    if (req.headers['x-requested-with'] === 'XMLHttpRequest' || req.query.format === 'array') {
-      return res.json(items);
-    }
-    return res.json(items);
+    res.setHeader('X-Total-Count', total);
+
+    return res.json({
+      success: true,
+      data: items,
+      total,
+      page: pageNum,
+      totalPages,
+      limit: pageSize,
+      pagination: { total, page: pageNum, limit: pageSize, pages: totalPages },
+      stats,
+    });
   } catch (err) {
     next(err);
   }
@@ -301,6 +370,8 @@ router.post('/:id/soft-hold', async (req, res, next) => {
     );
     if (!item) return res.status(404).json({ success: false, message: 'Vehicle not found.' });
 
+    invalidateCache();
+
     return res.json({
       success: true,
       message: `Soft hold placed for ${customerName || 'customer'} (expires in ${durationHours}h)`,
@@ -323,6 +394,8 @@ router.post('/:id/release-hold', async (req, res, next) => {
       { new: true }
     );
     if (!item) return res.status(404).json({ success: false, message: 'Vehicle not found.' });
+
+    invalidateCache();
 
     return res.json({ success: true, message: 'Soft hold released. Vehicle back in available stock.', data: item });
   } catch (err) {
