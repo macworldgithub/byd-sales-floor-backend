@@ -97,5 +97,6 @@ const handleMeStats = async (req, res, next) => {
 
 router.get('/me', handleMeStats);
 router.get('/summary', handleMeStats);
+router.get('/floor', handleMeStats);
 
 module.exports = router;
