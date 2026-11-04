@@ -10,7 +10,7 @@ const settingSchema = new mongoose.Schema(
     username: { type: String, default: '' },
     apiKey: { type: String, default: '' },
     simulationMode: { type: Boolean, default: true },
-    senderId: { type: String, default: 'BYD-DIRECT' },
+    senderId: { type: String, default: 'HARMONY' },
     connectionStatus: {
       type: String,
       enum: ['untested', 'connected', 'failed'],

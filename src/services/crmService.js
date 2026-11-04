@@ -2,7 +2,7 @@
  * crmService.js – Production CRM Service integrated directly with MongoDB Atlas databases
  * Uses:
  *   deliveryConn → customers, opportunities, allocations, saleslogentries, stockholds, timelineevents, clients, users
- *   leadConn     → inventories (865 BYD vehicles), leads (4,036 prospects), conversations
+ *   leadConn     → inventories, leads, conversations
  */
 const crypto = require('crypto');
 const { deliveryConn, leadConn, ensureDbConnected } = require('../db');
@@ -150,16 +150,16 @@ const crmService = {
         name: doc.name,
         phone: doc.phone,
         email: doc.email || '',
-        site: doc.site || 'Fairfield',
-        owner_user_id: doc.owner_user_id || 'usr-001',
-        owner_name: doc.owner_name || 'Alex Rivers',
-        source: doc.source || 'Virtual Yard',
+        site: doc.site || '',
+        owner_user_id: doc.owner_user_id || '',
+        owner_name: doc.owner_name || '',
+        source: doc.source || '',
         record_type: doc.record_type || 'Individual',
         company_name: doc.company_name || null,
         lead_prospect_id: doc.lead_prospect_id || null,
         delivery_client_id: doc.delivery_client_id || null,
-        consent_sms: doc.consent_sms !== false,
-        consent_updated_at: doc.consent_updated_at || doc.updatedAt || doc.createdAt,
+        consent_sms: doc.consent_sms === true,
+        consent_updated_at: doc.consent_updated_at || null,
         do_not_contact: Boolean(doc.do_not_contact),
         notes: doc.notes || '',
         total_open_value: totalOpenValue,
@@ -203,16 +203,16 @@ const crmService = {
       name: doc.name,
       phone: doc.phone,
       email: doc.email || '',
-      site: doc.site || 'Fairfield',
-      owner_user_id: doc.owner_user_id || 'usr-001',
-      owner_name: doc.owner_name || 'Alex Rivers',
-      source: doc.source || 'Virtual Yard',
+      site: doc.site || '',
+      owner_user_id: doc.owner_user_id || '',
+      owner_name: doc.owner_name || '',
+      source: doc.source || '',
       record_type: doc.record_type || 'Individual',
       company_name: doc.company_name || null,
       lead_prospect_id: doc.lead_prospect_id || null,
       delivery_client_id: doc.delivery_client_id || null,
-      consent_sms: doc.consent_sms !== false,
-      consent_updated_at: doc.consent_updated_at || doc.updatedAt,
+      consent_sms: doc.consent_sms === true,
+      consent_updated_at: doc.consent_updated_at || null,
       do_not_contact: Boolean(doc.do_not_contact),
       notes: doc.notes || '',
       total_open_value: totalOpenValue,
@@ -230,10 +230,11 @@ const crmService = {
     const collection = deliveryConn.db.collection('customers');
 
     const formattedPhone = formatPhoneE164(data.phone);
+    if (!formattedPhone && !data.email) throw Object.assign(new Error('A phone number or email address is required.'), { statusCode: 400 });
 
     // Duplicate detection (§5.1, AC-1)
     const existing = await collection.findOne({
-      $or: [{ phone: formattedPhone }, { email: data.email ? data.email.toLowerCase() : null }],
+      $or: [...(formattedPhone ? [{ phone: formattedPhone }] : []), ...(data.email ? [{ email: data.email.toLowerCase() }] : [])],
     });
 
     if (existing) {
@@ -251,9 +252,9 @@ const crmService = {
       name: data.name,
       phone: formattedPhone,
       email: data.email ? data.email.toLowerCase() : null,
-      site: data.site || 'Fairfield',
+      site: data.site || '',
       owner_user_id: data.owner_user_id || null,
-      owner_name: data.owner_name || 'Alex Rivers',
+      owner_name: data.owner_name || '',
       source: data.source || 'Manual',
       record_type: data.record_type || 'Individual',
       company_name: data.company_name || null,
@@ -262,9 +263,9 @@ const crmService = {
       lead_prospect_id: data.lead_prospect_id || null,
       delivery_client_id: null,
       vy_customer_id: null,
-      consent_sms: data.consent_sms !== false,
+      consent_sms: data.consent_sms === true,
       do_not_contact: false,
-      preferred_model: data.preferred_model || 'SEALION 7',
+      preferred_model: data.preferred_model || '',
       tags: [],
       notes: data.notes || '',
       is_merged: false,
@@ -553,8 +554,8 @@ const crmService = {
       title: note.title || 'Dealership Staff Note',
       content: note.content || note.body,
       body: note.content || note.body,
-      author: note.author || 'Alex Rivers',
-      author_name: note.author || 'Alex Rivers',
+      author: note.author || '',
+      author_name: note.author || '',
       source: 'Sales CRM',
       source_system: 'crm',
       timestamp: now,
@@ -622,7 +623,7 @@ const crmService = {
     return newEvent;
   },
 
-  async editTimelineNote(eventId, newContent, author = 'Alex Rivers') {
+  async editTimelineNote(eventId, newContent, author = '') {
     await ensureDbConnected();
     const tlColl = deliveryConn.db.collection('timelineevents');
 
@@ -652,7 +653,7 @@ const crmService = {
     return tlColl.findOne({ event_id: eventId });
   },
 
-  async softDeleteTimelineEvent(eventId, author = 'Alex Rivers', reason = 'Administrative correction') {
+  async softDeleteTimelineEvent(eventId, author = '', reason = 'Administrative correction') {
     await ensureDbConnected();
     const tlColl = deliveryConn.db.collection('timelineevents');
 
@@ -805,14 +806,14 @@ const crmService = {
       customer_name: doc.customer_name,
       customer_phone: doc.customer_phone,
       customer_email: doc.customer_email || '',
-      site: doc.site || 'Fairfield',
-      owner_user_id: doc.owner_user_id || 'usr-001',
-      owner_name: doc.owner_name || 'Alex Rivers',
+      site: doc.site || '',
+      owner_user_id: doc.owner_user_id || '',
+      owner_name: doc.owner_name || '',
       secondary_owner: doc.secondary_owner || doc.secondary_salesperson || null,
       secondary_split: doc.secondary_split || 0,
       stage: doc.stage || 'New / Allocated',
       vehicle_descriptor: doc.vehicle_descriptor || `${doc.model || 'BYD'} ${doc.variant || ''}`.trim(),
-      model: doc.model || 'SEALION 7',
+      model: doc.model || '',
       variant: doc.variant || '',
       colour: doc.colour || '',
       order_type: doc.stock_type === 'factory_order' ? 'Factory Order' : 'Stock',
@@ -868,9 +869,9 @@ const crmService = {
       customer_name: doc.customer_name,
       customer_phone: doc.customer_phone,
       customer_email: doc.customer_email || '',
-      site: doc.site || 'Fairfield',
-      owner_user_id: doc.owner_user_id || 'usr-001',
-      owner_name: doc.owner_name || 'Alex Rivers',
+      site: doc.site || '',
+      owner_user_id: doc.owner_user_id || '',
+      owner_name: doc.owner_name || '',
       secondary_owner: doc.secondary_owner || doc.secondary_salesperson || null,
       secondary_split: doc.secondary_split || 0,
       stage: doc.stage || 'New / Allocated',
@@ -912,24 +913,25 @@ const crmService = {
     const oppId = 'OPP-BYD-' + (200 + count + 1);
 
     const cust = await custColl.findOne({ customer_id: data.customer_id });
+    if (!cust) throw Object.assign(new Error('Select an existing customer.'), { statusCode: 400 });
 
     const newOppDoc = {
       opportunity_id: oppId,
       customer_id: data.customer_id,
       customer_name: cust?.name || data.customer_name || 'Customer',
-      customer_phone: cust?.phone || data.customer_phone || '+61400000000',
+      customer_phone: cust?.phone || data.customer_phone || '',
       customer_email: cust?.email || data.customer_email || '',
-      site: data.site || cust?.site || 'Fairfield',
-      owner_user_id: data.owner_user_id || 'usr-001',
-      owner_name: data.owner_name || 'Alex Rivers',
+      site: data.site || cust?.site || '',
+      owner_user_id: data.owner_user_id || '',
+      owner_name: data.owner_name || '',
       secondary_owner: data.secondary_owner || null,
       secondary_split: Number(data.secondary_split) || 0,
       secondary_salesperson: data.secondary_owner || null,
       stage: data.stage || 'New / Allocated',
-      vehicle_descriptor: data.vehicle_descriptor || `${data.model || 'BYD SEALION 7'} ${data.variant || 'Premium'}`,
-      model: data.model || 'SEALION 7',
-      variant: data.variant || 'Premium',
-      colour: data.colour || 'Atlantis Grey',
+      vehicle_descriptor: data.vehicle_descriptor || [data.model, data.variant].filter(Boolean).join(' '),
+      model: data.model || '',
+      variant: data.variant || '',
+      colour: data.colour || '',
       stock_type: data.order_type === 'Factory Order' ? 'factory_order' : 'stock',
       vy_stock_id: data.vy_stock_id || null,
       vy_order_id: data.vy_order_id || null,
@@ -1129,7 +1131,7 @@ const crmService = {
     }
 
     const vehicleDescriptor = payload.vehicle_descriptor || opp.vehicle_descriptor || `${opp.model} ${opp.variant}`;
-    const primarySalesperson = payload.primary_salesperson || opp.owner_name || 'Alex Rivers';
+    const primarySalesperson = payload.primary_salesperson || opp.owner_name || '';
 
     // ── Step 2: VY Order / Stock Confirmation (§7.5 Step 2) ──────────────────
     const vyStockId = payload.vy_stock_id || opp.vy_stock_id || (isFactoryOrder ? 'FACTORY-ORDER' : null);
@@ -1144,7 +1146,7 @@ const crmService = {
       sales_log_id: salesLogId,
       opportunity_id: opp.opportunity_id,
       customer_id: customer.customer_id,
-      deal_number: `BYD-2026-${crypto.randomUUID().slice(0, 8).toUpperCase()}`,
+      deal_number: `BYD-${new Date().getFullYear()}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`,
       deal_date: now.toISOString().split('T')[0],
       customer_name: customer.name,
       mobile: customer.phone,
@@ -1158,10 +1160,10 @@ const crmService = {
       consultant_name: primarySalesperson,
       secondary_consultant: payload.secondary_salesperson || opp.secondary_owner || null,
       site: opp.site,
-      list_price: opp.total_price || opp.list_price || 60000,
-      gross_margin: Math.round((opp.total_price || opp.list_price || 60000) * 0.08),
-      deposit: Number(payload.deposit) || 1000,
-      finance_method: payload.finance_method || 'Dealer Finance',
+      list_price: opp.total_price ?? opp.list_price ?? null,
+      gross_margin: opp.gross_margin ?? opp.gross ?? null,
+      deposit: Number(payload.deposit) || 0,
+      finance_method: payload.finance_method || null,
       status: 'written',
       source: 'crm',
       exception_status: 'none',
@@ -1194,7 +1196,7 @@ const crmService = {
         imported_from: 'crm',
         crm_customer_id: customer.customer_id,
         crm_opportunity_id: opp.opportunity_id,
-        delivery_date: new Date(Date.now() + 5 * 86400000).toISOString().split('T')[0],
+        delivery_date: opp.delivery_date || opp.scheduled_delivery_date || null,
         comments: [
           {
             author_name: `${primarySalesperson} (Sales CRM)`,
@@ -1397,21 +1399,21 @@ const crmService = {
 
     const data = docs.map((doc) => ({
       allocation_id: doc.allocation_id || String(doc._id),
-      lead_prospect_id: doc.lead_prospect_id || 'LP-40192',
+      lead_prospect_id: doc.lead_prospect_id || '',
       customer_id: doc.customer_id,
       prospect_name: doc.prospect_name,
       phone: doc.phone,
       email: doc.email || '',
-      source: doc.source || 'Virtual Yard',
-      vehicle: doc.vehicle_interest || 'BYD SEALION 7',
-      site: doc.site || 'Fairfield',
-      ai_score: doc.ai_score || 90,
+      source: doc.source || '',
+      vehicle: doc.vehicle_interest || '',
+      site: doc.site || '',
+      ai_score: doc.ai_score ?? null,
       last_sms_summary: doc.last_sms_summary || '',
       appointment_booked: doc.appointment_when || null,
       allocated_at: doc.allocated_at || doc.createdAt,
       sla_expires_at: doc.sla_expires_at,
       status: doc.status || 'pending',
-      assigned_to: doc.assigned_to_name || 'Alex Rivers',
+      assigned_to: doc.assigned_to_name || '',
     }));
 
     return {
@@ -1435,6 +1437,7 @@ const crmService = {
     const tlColl = deliveryConn.db.collection('timelineevents');
 
     const formattedPhone = formatPhoneE164(data.phone);
+    if (!formattedPhone && !data.email) throw Object.assign(new Error('A phone number or email address is required.'), { statusCode: 400 });
 
     // Idempotency check (§5.3, §7.3, AC-4, AC-11)
     if (data.event_id || data.lead_prospect_id) {
@@ -1451,7 +1454,7 @@ const crmService = {
 
     // Match or create customer
     let customer = await custColl.findOne({
-      $or: [{ phone: formattedPhone }, { email: data.email ? data.email.toLowerCase() : null }],
+      $or: [...(formattedPhone ? [{ phone: formattedPhone }] : []), ...(data.email ? [{ email: data.email.toLowerCase() }] : [])],
     });
 
     if (!customer && (data.name || data.prospect_name)) {
@@ -1459,7 +1462,7 @@ const crmService = {
         name: data.name || data.prospect_name,
         phone: formattedPhone,
         email: data.email || null,
-        site: data.site || 'Fairfield',
+        site: data.site || '',
         source: data.source || 'Autogate',
         lead_prospect_id: data.lead_prospect_id || null,
         notes: data.notes || `Direct intake lead (${data.vehicle || 'BYD Range'})`,
@@ -1468,7 +1471,8 @@ const crmService = {
 
     // SLA Clock (default 15 minutes during trading hours, §5.3)
     const now = new Date();
-    const slaExpiresAt = data.sla_expires_at ? new Date(data.sla_expires_at) : new Date(now.getTime() + 15 * 60 * 1000);
+    const governance = await require('./crmLive').settings(deliveryConn.db);
+    const slaExpiresAt = data.sla_expires_at ? new Date(data.sla_expires_at) : new Date(now.getTime() + governance.effective.slaTimeoutMinutes * 60000);
 
     const count = await allocColl.countDocuments();
     const allocationId = 'ALC-' + (400 + count + 1);
@@ -1482,12 +1486,12 @@ const crmService = {
       phone: formattedPhone || data.phone,
       email: customer?.email || data.email || '',
       source: data.source || 'Autogate',
-      vehicle_interest: data.vehicle || data.vehicle_interest || 'BYD SEALION 7',
-      site: data.site || customer?.site || 'Fairfield',
-      ai_score: Number(data.score || data.ai_score) || 85,
+      vehicle_interest: data.vehicle || data.vehicle_interest || '',
+      site: data.site || customer?.site || '',
+      ai_score: Number.isFinite(Number(data.score ?? data.ai_score)) && (data.score ?? data.ai_score) != null ? Number(data.score ?? data.ai_score) : null,
       last_sms_summary: data.last_sms_summary || data.summary || '',
       appointment_when: data.appointment || data.appointment_when || null,
-      assigned_to_name: data.assigned_to || data.consultant || 'Alex Rivers',
+      assigned_to_name: data.assigned_to || data.consultant || '',
       allocated_at: now,
       sla_expires_at: slaExpiresAt,
       status: 'pending',
@@ -1506,8 +1510,8 @@ const crmService = {
       if (!existingOpp) {
         await this.createOpportunity({
           customer_id: customer.customer_id,
-          model: data.vehicle?.includes('SEALION') ? 'SEALION 7' : (data.vehicle || 'SEALION 7'),
-          vehicle_descriptor: data.vehicle || 'BYD SEALION 7 Premium',
+          model: data.model || data.vehicle || '',
+          vehicle_descriptor: data.vehicle || '',
           site: allocDoc.site,
           owner_name: allocDoc.assigned_to_name,
           stage: 'New / Allocated',
@@ -1568,12 +1572,12 @@ const crmService = {
             name: allocDoc.prospect_name,
             phone: allocDoc.phone,
             email: allocDoc.email,
-            vehicle: data.vehicle || 'BYD SEALION 7',
+            vehicle: data.vehicle || '',
             source: data.source || 'Autogate',
             platform: data.source === 'Autogate' ? 'autogate' : 'manual',
             stage: 'QUALIFIED',
             status: 'Assigned',
-            score: data.score || 85,
+            score: data.score ?? null,
             dealer: allocDoc.site,
             assignedTo: allocDoc.assigned_to_name,
             allocatedPersonFullName: allocDoc.assigned_to_name,
@@ -1591,7 +1595,7 @@ const crmService = {
     return allocDoc;
   },
 
-  async acceptAllocation(allocId, consultantName = 'Alex Rivers') {
+  async acceptAllocation(allocId, consultantName = '') {
     await ensureDbConnected();
     const allocColl = deliveryConn.db.collection('allocations');
     const custColl = deliveryConn.db.collection('customers');
@@ -1834,6 +1838,8 @@ const crmService = {
           { yard: { $regex: cleanLoc, $options: 'i' } },
           { site: { $regex: cleanLoc, $options: 'i' } },
           { dealer: { $regex: cleanLoc, $options: 'i' } },
+          { orderYard: { $regex: cleanLoc, $options: 'i' } },
+          { 'shirleyData.outBoundStore': { $regex: cleanLoc, $options: 'i' } },
         ],
       });
     }
@@ -1856,13 +1862,15 @@ const crmService = {
             { status: 'Inbound' },
           ],
         });
-      } else if (filter.status === 'Hold' || filter.status === 'On Hold') {
+      } else if (['Hold', 'On Hold', 'Held'].includes(filter.status)) {
         andConditions.push({
           $or: [
-            { status: { $in: ['Hold', 'On Hold', 'Reserved'] } },
+            { status: { $in: ['Hold', 'On Hold', 'Reserved', 'Held'] } },
             { isHold: true },
           ],
         });
+      } else {
+        andConditions.push({ status: filter.status });
       }
     }
     const vyQStr = String(filter.q || filter.search || '').trim();
@@ -1899,23 +1907,23 @@ const crmService = {
     const activeHolds = await holdsColl.find({ status: 'active' }).toArray();
 
     const data = stockDocs.map((doc) => {
-      const stockId = doc.stock ? `VY-VIC-${doc.stock}` : `VY-VIC-${doc.legacyId || '0000'}`;
-      const matchingHold = activeHolds.find((h) => h.vy_stock_id === stockId || h.vin === doc.registration?.vin);
+      const stockId = doc.stock ? `VY-VIC-${doc.stock}` : String(doc.identifier || doc.legacyId || doc._id);
+      const matchingHold = activeHolds.find((h) => h.vy_stock_id === stockId || (h.vin && h.vin === doc.registration?.vin));
 
       return {
         stock_id: stockId,
-        vin: doc.registration?.vin || 'VIN Pending',
-        model: doc.specifications?.model || doc.model?.replace(/.*BYD\s+/, '') || 'BYD',
-        variant: doc.specifications?.badge || 'Premium',
-        colour: doc.paint || doc.specifications?.colour || 'Ski White',
-        battery_kwh: doc.title?.includes('kWh') ? parseFloat(doc.title.match(/(\d+\.?\d*)\s*kWh/)?.[1] || 60) : 60,
-        status: matchingHold ? 'Held' : doc.status === 'Available' ? 'Available' : 'Available',
+        vin: doc.registration?.vin || '',
+        model: doc.specifications?.model || doc.model?.replace(/.*BYD\s+/, '') || '',
+        variant: doc.specifications?.badge || '',
+        colour: doc.paint || doc.specifications?.colour || '',
+        battery_kwh: doc.battery_kwh ?? (doc.title?.match(/(\d+\.?\d*)\s*kWh/) ? Number(doc.title.match(/(\d+\.?\d*)\s*kWh/)[1]) : null),
+        status: matchingHold ? 'Held' : ['Available', 'InStock', 'In Stock'].includes(doc.status) ? 'Available' : doc.status || doc.itemStatus || '',
         held_by: matchingHold ? `${matchingHold.held_by_name} (${matchingHold.opportunity_id})` : undefined,
         hold_expires_at: matchingHold?.expires_at || undefined,
-        location: doc.location || 'BYD Melbourne',
-        eta: doc.itemStatus === 'InStock' ? 'On Yard' : 'Inbound',
-        wholesale_price: doc.priceData?.ui ? Math.round(doc.priceData.ui * 0.9) : 45000,
-        retail_price: doc.priceData?.ui || 52000,
+        location: doc.location || '',
+        eta: doc.eta || '',
+        wholesale_price: doc.wholesale_price ?? null,
+        retail_price: doc.priceData?.ui ?? doc.retail_price ?? null,
       };
     });
 
@@ -1932,7 +1940,7 @@ const crmService = {
     };
   },
 
-  async holdStock(stockId, opportunityId, consultantName = 'Alex Rivers') {
+  async holdStock(stockId, opportunityId, consultantName = '') {
     await ensureDbConnected();
     const holdsColl = deliveryConn.db.collection('stockholds');
     const oppColl = deliveryConn.db.collection('opportunities');
@@ -1944,7 +1952,8 @@ const crmService = {
     });
 
     const holdId = `HOLD-BYD-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
-    const expiresAt = new Date(Date.now() + 48 * 3600000);
+    const governance = await require('./crmLive').settings(deliveryConn.db);
+    const expiresAt = new Date(Date.now() + governance.effective.stockHoldHours * 3600000);
     const now = new Date();
 
     const holdDoc = {
@@ -1953,12 +1962,12 @@ const crmService = {
       customer_id: opp?.customer_id || null,
       customer_name: opp?.customer_name || 'Customer',
       vy_stock_id: stockId,
-      vin: opp?.vin || 'VIN Attached',
-      model: opp?.model || 'SEALION 7',
-      variant: opp?.variant || 'Premium',
-      colour: opp?.colour || 'Atlantis Grey',
+      vin: opp?.vin || '',
+      model: opp?.model || '',
+      variant: opp?.variant || '',
+      colour: opp?.colour || '',
       held_by_name: consultantName,
-      site: opp?.site || 'Fairfield',
+      site: opp?.site || '',
       expires_at: expiresAt,
       status: 'active',
       held_at: now,
@@ -1982,8 +1991,8 @@ const crmService = {
           type: 'system',
           event_type: 'system',
           title: `Stock Reserved: ${stockId}`,
-          content: `Stock hold placed on ${stockId} (${opp.model || 'BYD'}) for 48 hours by ${consultantName}.`,
-          body: `Stock hold placed on ${stockId} (${opp.model || 'BYD'}) for 48 hours by ${consultantName}.`,
+          content: `Stock hold placed on ${stockId} (${opp.model || 'BYD'}) until ${expiresAt.toISOString()} by ${consultantName}.`,
+          body: `Stock hold placed on ${stockId} (${opp.model || 'BYD'}) until ${expiresAt.toISOString()} by ${consultantName}.`,
           author: consultantName,
           source: 'Sales CRM',
           occurred_at: now,
@@ -2123,10 +2132,10 @@ const crmService = {
       vin: doc.vin,
       stock_id: doc.vy_stock_id || doc.stock_id,
       sale_type: doc.sale_type || 'Retail',
-      consultant: doc.consultant_name || 'Alex Rivers',
-      site: doc.site || 'Fairfield',
-      amount: doc.list_price || 60000,
-      gross: doc.gross_margin || 4500,
+      consultant: doc.consultant_name || '',
+      site: doc.site || '',
+      amount: doc.total_price ?? doc.amount ?? doc.list_price ?? null,
+      gross: doc.gross_margin ?? doc.gross ?? null,
       reconciled: doc.reconciled_at ? true : false,
     }));
 
@@ -2376,125 +2385,6 @@ const crmService = {
     return '\uFEFF' + csvLines.join('\r\n');
   },
 
-  async getBoardTeam(query = {}) {
-    await ensureDbConnected();
-    const oppColl = deliveryConn.db.collection('opportunities');
-    const salesLogColl = deliveryConn.db.collection('saleslogentries');
-    const targetColl = deliveryConn.db.collection('targets');
-    const allocColl = deliveryConn.db.collection('allocations');
-
-    const filter = {};
-    if (query.site && query.site !== 'All' && query.site !== 'All Sites') {
-      filter.site = query.site;
-    }
-
-    const now = new Date();
-    const [allSold, allSalesLog, targets, allActiveOpps, allocations] = await Promise.all([
-      oppColl.find({ ...filter, stage: { $in: ['Written / Sold', 'In Delivery', 'Delivered / Won'] } }).toArray(),
-      salesLogColl.find(filter).toArray(),
-      targetColl.find(filter).toArray(),
-      oppColl.find({ ...filter, stage: { $nin: ['Delivered / Won', 'Lost / Parked'] } }).toArray(),
-      allocColl.find(filter).toArray(),
-    ]);
-
-    const totalTargetUnits = targets.length > 0
-      ? targets.reduce((sum, t) => sum + (t.target_units || 18), 0)
-      : (targets.length * 18);
-
-    const totalUnits = allSold.length;
-    const totalGross = allSalesLog.reduce((sum, r) => sum + (r.gross_margin || r.gross || 0), 0);
-    const pacePct = totalTargetUnits > 0 ? Math.round((totalUnits / totalTargetUnits) * 100) : 0;
-
-    // ── Pipeline Breakdown by Stage (§5.5, AC-6) ────────────────────────────
-    const pipelineByStage = {
-      'New / Allocated': 0,
-      'Working': 0,
-      'Appointment': 0,
-      'Negotiation': 0,
-      'Written / Sold': allSold.length,
-      'In Delivery': 0,
-    };
-    for (const opp of allActiveOpps) {
-      if (pipelineByStage[opp.stage] !== undefined) {
-        pipelineByStage[opp.stage]++;
-      }
-    }
-
-    // ── Ageing Metrics (§5.5) ────────────────────────────────────────────────
-    const msPerDay = 86400000;
-    const ageing = {
-      within7Days: 0,
-      days8to14: 0,
-      days15to30: 0,
-      over30Days: 0,
-    };
-    for (const opp of allActiveOpps) {
-      const updated = new Date(opp.updatedAt || opp.createdAt || now);
-      const days = Math.floor((now.getTime() - updated.getTime()) / msPerDay);
-      if (days <= 7) ageing.within7Days++;
-      else if (days <= 14) ageing.days8to14++;
-      else if (days <= 30) ageing.days15to30++;
-      else ageing.over30Days++;
-    }
-
-    // ── SLA Breach Count (§5.5) ──────────────────────────────────────────────
-    const slaBreaches = allocations.filter(
-      (a) => a.status === 'escalated' || (a.status === 'pending' && a.sla_expires_at && new Date(a.sla_expires_at) < now)
-    ).length;
-
-    // ── Breakdown by Consultant Leaderboard (§5.5, AC-6) ────────────────────
-    const consultantMap = {};
-    for (const r of allSalesLog) {
-      const name = r.consultant_name || r.consultant || 'Alex Rivers';
-      if (!consultantMap[name]) {
-        consultantMap[name] = { name, units: 0, gross: 0, target: 18, site: r.site || 'Fairfield' };
-      }
-      consultantMap[name].units++;
-      consultantMap[name].gross += r.gross_margin || r.gross || 4500;
-    }
-
-    for (const t of targets) {
-      if (consultantMap[t.consultant_name]) {
-        consultantMap[t.consultant_name].target = t.target_units || 18;
-      } else {
-        consultantMap[t.consultant_name] = {
-          name: t.consultant_name,
-          units: 0,
-          gross: 0,
-          target: t.target_units || 18,
-          site: t.site || 'Fairfield',
-        };
-      }
-    }
-
-    const leaderboard = Object.values(consultantMap).map((c) => ({
-      ...c,
-      pacePct: Math.round((c.units / (c.target || 1)) * 100),
-    })).sort((a, b) => b.units - a.units);
-
-    // ── Site vs Site Breakdown (§5.5) ────────────────────────────────────────
-    const siteMap = {};
-    for (const r of allSalesLog) {
-      const site = r.site || 'Fairfield';
-      if (!siteMap[site]) siteMap[site] = { site, units: 0, gross: 0 };
-      siteMap[site].units++;
-      siteMap[site].gross += r.gross_margin || r.gross || 4500;
-    }
-
-    return {
-      totalUnits,
-      targetUnits: totalTargetUnits,
-      pacePct,
-      totalGross,
-      networkConversion: allocations.length > 0 ? Math.round((allSold.length / allocations.length) * 100 * 10) / 10 : 0,
-      pipelineByStage,
-      ageing,
-      slaBreaches,
-      leaderboard,
-      siteBreakdown: Object.values(siteMap),
-    };
-  },
-
   async logPhoneCall(customerId, details) {
     await ensureDbConnected();
     const tlColl = deliveryConn.db.collection('timelineevents');
@@ -2505,9 +2395,9 @@ const crmService = {
       customer_id: customerId,
       opportunity_id: details.opportunityId || null,
       type: 'call_log',
-      title: `Phone Call Log · ${details.outcome} (${details.durationMinutes || 5} min)`,
-      content: details.notes || `Phone call outcome: ${details.outcome}. Duration: ${details.durationMinutes || 5} minutes.`,
-      author: details.author || 'Alex Rivers',
+      title: `Phone Call Log · ${details.outcome || 'Outcome not recorded'} (${details.durationMinutes ?? '—'} min)`,
+      content: details.notes || `Phone call outcome: ${details.outcome || 'Not recorded'}. Duration: ${details.durationMinutes ?? 'Not recorded'} minutes.`,
+      author: details.author || '',
       source: 'Sales CRM',
       occurred_at: new Date(),
       visibility: 'internal',
@@ -2517,135 +2407,6 @@ const crmService = {
 
     await tlColl.insertOne(callEvt);
     return callEvt;
-  },
-
-  async getBoardMe(query = {}) {
-    await ensureDbConnected();
-    const oppColl = deliveryConn.db.collection('opportunities');
-    const salesLogColl = deliveryConn.db.collection('saleslogentries');
-    const targetColl = deliveryConn.db.collection('targets');
-    const allocColl = deliveryConn.db.collection('allocations');
-
-    const consultant = query.consultant || 'Alex Rivers';
-    const site = query.site || 'Fairfield';
-
-    const now = new Date();
-
-    const [userOpps, userSalesLog, targetDoc, userAllocations] = await Promise.all([
-      oppColl.find({ owner_name: { $regex: `^${consultant}$`, $options: 'i' } }).toArray(),
-      salesLogColl.find({ consultant: { $regex: `^${consultant}$`, $options: 'i' } }).toArray(),
-      targetColl.findOne({ consultant_name: { $regex: `^${consultant}$`, $options: 'i' } }),
-      allocColl.find({ assigned_to_name: { $regex: `^${consultant}$`, $options: 'i' } }).toArray(),
-    ]);
-
-    const soldOpps = userOpps.filter((o) =>
-      ['Written / Sold', 'In Delivery', 'Delivered / Won'].includes(o.stage)
-    );
-
-    const writtenUnitsMtd = soldOpps.length;
-    const targetUnits = targetDoc?.target_units || 16;
-    const pacePercentage = Math.round((writtenUnitsMtd / (targetUnits || 1)) * 100);
-
-    const writtenGrossMtd = userSalesLog.reduce((sum, r) => sum + (r.gross || r.gross_margin || 0), 0);
-
-    const openDealsCount = userOpps.filter(
-      (o) => !['Delivered / Won', 'Lost / Parked'].includes(o.stage)
-    ).length;
-
-    const overdueActionsCount = userOpps.filter((o) => {
-      if (o.is_overdue) return true;
-      if (o.next_action_at && new Date(o.next_action_at) < now) return true;
-      return false;
-    }).length;
-
-    const conversionRatePct = userAllocations.length > 0
-      ? Math.min(100, Math.round((writtenUnitsMtd / userAllocations.length) * 100))
-      : 0;
-
-    const urgentAllocations = userAllocations
-      .filter((a) => a.status === 'pending' || a.status === 'escalated')
-      .map((a) => ({
-        ...a,
-        allocation_id: a.allocation_id || a._id?.toString(),
-        lead_prospect_id: a.lead_prospect_id || a._id?.toString(),
-      }));
-
-    const pipelineBreakdown = {
-      'New / Allocated': userOpps.filter((o) => o.stage === 'New / Allocated').length,
-      Working: userOpps.filter((o) => o.stage === 'Working').length,
-      Appointment: userOpps.filter((o) => o.stage === 'Appointment').length,
-      Negotiation: userOpps.filter((o) => o.stage === 'Negotiation').length,
-      'Written / Sold': soldOpps.length,
-      'In Delivery': userOpps.filter((o) => o.stage === 'In Delivery').length,
-    };
-
-    return {
-      consultant,
-      site,
-      writtenUnitsMtd,
-      targetUnits,
-      pacePercentage,
-      writtenGrossMtd,
-      openDealsCount,
-      overdueActionsCount,
-      conversionRatePct,
-      avgFirstTouchMinutes: 8.5,
-      written_units_mtd: writtenUnitsMtd,
-      target_units: targetUnits,
-      pace_pct: pacePercentage,
-      written_gross_mtd: writtenGrossMtd,
-      open_deals_count: openDealsCount,
-      overdue_actions_count: overdueActionsCount,
-      conversion_rate_pct: conversionRatePct,
-      avg_first_touch_minutes: 8.5,
-      urgentAllocations,
-      pipelineBreakdown,
-    };
-  },
-
-  async getTargets(query = {}) {
-    await ensureDbConnected();
-    const targetColl = deliveryConn.db.collection('targets');
-    const filter = {};
-    if (query.site && query.site !== 'All' && query.site !== 'All Sites') {
-      filter.site = query.site;
-    }
-    if (query.consultant_name) {
-      filter.consultant_name = { $regex: query.consultant_name, $options: 'i' };
-    }
-
-    const targets = await targetColl.find(filter).toArray();
-    return targets;
-  },
-
-  async updateTarget(data = {}) {
-    await ensureDbConnected();
-    const targetColl = deliveryConn.db.collection('targets');
-    const now = new Date();
-
-    const consultantName = data.consultant_name || data.consultant || 'Alex Rivers';
-    const site = data.site || 'Fairfield';
-    const targetUnits = Number(data.target_units || data.targetUnitCount || 16);
-    const targetRevenue = Number(data.target_revenue || data.targetRevenue || (targetUnits * 45000));
-    const period = data.period || 'Current Month';
-
-    const filter = { consultant_name: consultantName, period };
-    const updateDoc = {
-      $set: {
-        consultant_name: consultantName,
-        site,
-        target_units: targetUnits,
-        target_revenue: targetRevenue,
-        period,
-        updatedAt: now,
-      },
-      $setOnInsert: {
-        createdAt: now,
-      },
-    };
-
-    await targetColl.updateOne(filter, updateDoc, { upsert: true });
-    return await targetColl.findOne({ consultant_name: consultantName, period });
   },
 
   async getDeliveryWatch(query = {}) {
@@ -2792,7 +2553,7 @@ const crmService = {
         (c.location && /nunawading/i.test(c.location) ? 'BYD Nunawading' : c.location) ||
         (c.department && /nunawading/i.test(c.department) ? 'BYD Nunawading' : c.department) ||
         (siteVal && siteVal !== 'All' && siteVal !== 'All Sites' ? siteVal : 'BYD Nunawading');
-      const inferredLocation = c.location || inferredSite || 'Nunawading, VIC';
+      const inferredLocation = c.location || inferredSite || '';
       const inferredYard = c.yard || (c.vehicle && c.vehicle.yard) || inferredSite;
       const inferredDealer = c.dealer || c.dealership || inferredSite;
       const inferredDept = c.department || 'Delivery Centre';
@@ -2802,23 +2563,18 @@ const crmService = {
         opportunity_id: linkedOpp.opportunity_id || c.opportunity_id || '',
         customer_name: c.name || c.customer_name || linkedOpp.customer_name || 'BYD Customer',
         phone: c.phone || linkedOpp.customer_phone || '',
-        vehicle: c.vehicle || linkedOpp.vehicle_descriptor || 'BYD SEALION 7',
-        vin: c.vin || linkedOpp.vin || '6FPPXXMJGPST00129',
-        rego: c.rego || c.registration || 'BYD-092',
+        vehicle: c.vehicle || linkedOpp.vehicle_descriptor || '',
+        vin: c.vin || linkedOpp.vin || '',
+        rego: c.rego || c.registration || '',
         stage: c.stage || c.delivery_stage || 'Scheduled',
-        delivery_date: c.delivery_date || c.scheduled_delivery_date || new Date(Date.now() + 86400000 * 2).toISOString(),
-        delivery_consultant: c.delivery_consultant || c.salesperson || linkedOpp.owner_name || 'Alex Rivers',
-        handover_specialist: c.handover_specialist || 'Marcus Vance',
-        contact_status: c.contact_status || 'Confirmed',
-        docs_completeness: c.docs_completeness || (c.docs_status?.atrSigned ? 'Complete' : 'Partial'),
-        docs_status: c.docs_status || {
-          atrSigned: true,
-          licenceFront: true,
-          insurance: true,
-          paymentSettled: true,
-        },
+        delivery_date: c.delivery_date || c.scheduled_delivery_date || '',
+        delivery_consultant: c.delivery_consultant || c.salesperson || linkedOpp.owner_name || '',
+        handover_specialist: c.handover_specialist || '',
+        contact_status: c.contact_status || '',
+        docs_completeness: c.docs_completeness || (c.docs_status?.atrSigned === true ? 'Partial' : 'Unknown'),
+        docs_status: c.docs_status || {},
         arrived: Boolean(c.arrived),
-        last_comment: c.last_comment || (Array.isArray(c.comments) && c.comments[c.comments.length - 1]?.body) || 'PDI completed, awaiting customer arrival.',
+        last_comment: c.last_comment || (Array.isArray(c.comments) && c.comments[c.comments.length - 1]?.body) || '',
         alert: c.alert || undefined,
         site: inferredSite,
         location: inferredLocation,
@@ -2828,38 +2584,7 @@ const crmService = {
       };
     });
 
-    if (records.length === 0 && activeSoldOpps.length > 0 && !delQStr && (!siteVal || siteVal === 'All' || siteVal === 'All Sites')) {
-      records = activeSoldOpps.slice(skip, skip + limit).map((opp) => ({
-        client_id: opp.delivery_client_id || `CLI-${opp.opportunity_id}`,
-        opportunity_id: opp.opportunity_id,
-        customer_name: opp.customer_name,
-        phone: opp.customer_phone,
-        vehicle: opp.vehicle_descriptor || opp.model,
-        vin: opp.vin || '6FPPXXMJGPST00129',
-        rego: '1XQ-8BW',
-        stage: opp.delivery_stage || 'Scheduled',
-        delivery_date: opp.expected_close || new Date(Date.now() + 86400000 * 3).toISOString(),
-        delivery_consultant: opp.owner_name,
-        handover_specialist: 'Marcus Vance',
-        contact_status: 'Confirmed',
-        docs_completeness: 'Complete',
-        docs_status: {
-          atrSigned: true,
-          licenceFront: true,
-          insurance: true,
-          paymentSettled: true,
-        },
-        arrived: false,
-        last_comment: opp.next_action_desc || 'Vehicle inspection verified. Customer notified.',
-        site: opp.site || 'BYD Nunawading',
-        location: opp.location || opp.site || 'BYD Nunawading',
-        yard: opp.yard || 'BYD Nunawading',
-        dealer: opp.dealer || 'BYD Nunawading',
-        department: 'Delivery Centre',
-      }));
-    }
-
-    const total = totalClients || records.length;
+    const total = totalClients;
     const pages = Math.ceil(total / limit) || 1;
 
     return {
@@ -3146,7 +2871,7 @@ const crmService = {
     for (const hold of expiredHolds) {
       await holdColl.updateOne(
         { _id: hold._id },
-        { $set: { status: 'expired', released_at: now, release_reason: 'Automatic 48-hour timeout (§5.6)' } }
+        { $set: { status: 'expired', released_at: now, release_reason: 'Saved stock reservation expired' } }
       );
 
       // Release in Lead Centre inventory
@@ -3165,7 +2890,7 @@ const crmService = {
             $set: {
               vy_stock_status: 'Available',
               vy_hold_status: 'expired',
-              next_action_desc: 'VY Stock hold expired automatically after 48h. Contact customer.',
+              next_action_desc: 'VY stock reservation expired. Contact customer.',
               updatedAt: now,
             },
           },
@@ -3179,9 +2904,9 @@ const crmService = {
             opportunity_id: opp.value.opportunity_id,
             type: 'vy_stock_event',
             event_type: 'vy_stock_event',
-            title: `Virtual Yard Stock Hold Expired (48h)`,
-            content: `Reserved stock ${hold.stock_id || hold.vehicle} has expired after 48 hours and was automatically released to available inventory (§5.6).`,
-            body: `Reserved stock ${hold.stock_id || hold.vehicle} has expired after 48 hours and was automatically released to available inventory (§5.6).`,
+            title: 'Virtual Yard Stock Hold Expired',
+            content: `Reserved stock ${hold.stock_id || hold.vehicle} expired at ${hold.expires_at} and was automatically released to available inventory.`,
+            body: `Reserved stock ${hold.stock_id || hold.vehicle} expired at ${hold.expires_at} and was automatically released to available inventory.`,
             author: 'Virtual Yard Auto-Release Engine',
             source: 'Virtual Yard',
             source_system: 'virtual_yard',
@@ -3616,10 +3341,7 @@ const crmService = {
     const allocColl = deliveryConn.db.collection('allocations');
     const now = new Date();
 
-    const siteFilter = {};
-    if (query.site && query.site !== 'All' && query.site !== 'All Sites') {
-      siteFilter.$or = [{ site: query.site }, { dealer: query.site }];
-    }
+    const siteFilter = require('./crmBrowsing').siteScope(query, user, ['site_location', 'site', 'dealer']);
 
     // 1. Delivery Centre Alerts (missing paperwork, unallocated VIN, date changes)
     const [alertClients, urgentAllocations, overdueOpps] = await Promise.all([
@@ -3650,7 +3372,7 @@ const crmService = {
     for (const c of alertClients) {
       let alertMsg = c.alert || 'Handover Action Required';
       let severity = 'warning';
-      if (!c.docs_status?.atrSigned) {
+      if (c.docs_status?.atrSigned === false) {
         alertMsg = `Missing signed ATR / handover paperwork for ${c.name || 'Client'}`;
         severity = 'danger';
       } else if (!c.vin || c.vin === 'UNALLOCATED') {
@@ -3666,9 +3388,9 @@ const crmService = {
         message: alertMsg,
         customer_name: c.name || c.customer_name,
         vehicle: c.vehicle,
-        site: c.site || c.dealer || 'Fairfield',
+        site: c.site || c.dealer || '',
         client_id: String(c._id),
-        timestamp: c.updatedAt || now,
+        timestamp: c.updatedAt || c.createdAt || null,
       });
     }
 
@@ -3680,7 +3402,7 @@ const crmService = {
         type: 'sla_escalation',
         severity: isBreached ? 'danger' : 'warning',
         title: isBreached ? 'SLA Breached — Floor Escalation' : 'Urgent Unworked Lead Allocation',
-        message: `${a.name} (${a.vehicle || 'BYD'}) allocated to ${a.assigned_to}. ${isBreached ? 'SLA Expired!' : 'Action required within 15 min'}`,
+        message: `${a.prospect_name || a.name || 'Unnamed prospect'} (${a.vehicle_interest || a.vehicle || ''}) allocated to ${a.assigned_to_name || a.assigned_to || 'Unassigned'}. ${isBreached ? 'SLA Expired!' : a.sla_expires_at ? `Response deadline: ${formatAEST(a.sla_expires_at)}` : 'Response deadline not recorded'}`,
         allocation_id: a.allocation_id,
         site: a.site,
         assigned_to: a.assigned_to,
@@ -3790,7 +3512,8 @@ const crmService = {
     // Timeframe filtering
     if (query.timeframe && query.timeframe !== 'All') {
       const now = new Date();
-      const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone: 'Australia/Melbourne', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(now).map(part => [part.type, part.value]));
+      const startOfToday = require('./crmBrowsing').dayStart(`${parts.year}-${parts.month}-${parts.day}`);
       const endOfToday = new Date(startOfToday.getTime() + 86400000 - 1);
       const endOfTomorrow = new Date(startOfToday.getTime() + 86400000 * 2 - 1);
       const endOfWeek = new Date(startOfToday.getTime() + 86400000 * 7 - 1);
@@ -3867,15 +3590,18 @@ const crmService = {
     const custColl = deliveryConn.db.collection('customers');
     const now = new Date();
 
-    const consultant = data.consultantName || data.consultant || user.name || 'Alex Rivers';
-    const site = data.site || data.dealership || user.site || 'Fairfield';
+    const consultant = data.consultantName || data.consultant || user.name || user.email;
+    const site = user.locked_site || data.site || data.dealership || user.site || '';
+    if (!data.when || Number.isNaN(new Date(data.when).getTime())) {
+      throw Object.assign(new Error('A valid appointment time is required.'), { statusCode: 400 });
+    }
 
     const apptDoc = {
       prospectName: data.prospectName || data.customer_name || 'Customer',
       phone: data.phone ? formatPhoneE164(data.phone) : '',
       email: data.email || null,
-      vehicle: data.vehicle || data.preferred_model || 'BYD SEALION 7',
-      when: data.when || new Date(Date.now() + 86400000).toISOString(),
+      vehicle: data.vehicle || data.preferred_model || '',
+      when: data.when,
       type: data.type || 'Test Drive',
       status: data.status || 'Confirmed',
       consultantName: consultant,
@@ -3885,6 +3611,7 @@ const crmService = {
       dealership: site,
       durationMinutes: Number(data.durationMinutes) || 45,
       notes: data.notes || '',
+      loop: data.loop || '',
       leadId: data.leadId || data.lead_prospect_id || null,
       customer_id: data.customer_id || null,
       opportunity_id: data.opportunity_id || null,
@@ -3892,9 +3619,10 @@ const crmService = {
       updatedAt: now,
     };
 
-    const result = await apptColl.insertOne(apptDoc);
-    apptDoc._id = result.insertedId;
-    apptDoc.id = String(result.insertedId);
+    const booking = await require('./appointmentBooking').book(apptDoc, data, user, apptColl);
+    Object.assign(apptDoc, booking.appointment);
+    apptDoc.id = String(apptDoc._id);
+    if (booking.reused) return apptDoc;
 
     // If linked to customer or opportunity, transition stage to 'Appointment'
     if (data.opportunity_id) {
@@ -3931,6 +3659,7 @@ const crmService = {
   },
 
   async updateAppointment(id, patch = {}, user = {}) {
+    require('./appointmentBooking').assertBookingPatch(patch);
     await ensureDbConnected();
     const apptColl = leadConn.db.collection('appointments');
     const tlColl = deliveryConn.db.collection('timelineevents');
@@ -4049,7 +3778,7 @@ const crmService = {
       imported_from: 'crm',
       crm_customer_id: customer.customer_id,
       crm_opportunity_id: opp.opportunity_id,
-      delivery_date: new Date(Date.now() + 5 * 86400000).toISOString().split('T')[0],
+      delivery_date: opp.delivery_date || opp.scheduled_delivery_date || null,
       comments: [
         {
           author_name: `${user.name || opp.owner_name} (Sales CRM Re-sync)`,
@@ -4228,11 +3957,11 @@ const crmService = {
       customer_id: customerId,
       title: docData.title || 'Attached Document',
       category: docData.category || 'Contract & Forms',
-      file_name: docData.file_name || docData.fileName || `${docData.title || 'document'}.pdf`,
+      file_name: docData.file_name || docData.fileName || '',
       file_type: docData.file_type || docData.fileType || 'application/pdf',
-      file_size: docData.file_size || docData.fileSize || '142 KB',
+      file_size: docData.file_size || docData.fileSize || '',
       file_url: docData.file_url || docData.fileUrl || '',
-      status: docData.status || 'Verified',
+      status: docData.status || 'Pending Review',
       notes: docData.notes || '',
       uploaded_by: authorName,
       createdAt: now,
@@ -4299,142 +4028,23 @@ const crmService = {
   },
 
   // ─── 12. Dynamic Scoreboards & Targets (§5.5, AC-6) ───────────────────────────
-  async getBoardMe(query = {}) {
+  async getBoardMe(query = {}, user = {}) {
     await ensureDbConnected();
-    const oppColl = deliveryConn.db.collection('opportunities');
-    const allocColl = deliveryConn.db.collection('allocations');
-    const salesLogColl = deliveryConn.db.collection('saleslogentries');
-    const targetsColl = deliveryConn.db.collection('crmtargets');
-
-    const consultantName = query.consultant || 'Alex Rivers';
-    const regexName = new RegExp(consultantName, 'i');
-
-    const [writtenOpps, openOpps, totalOpps, allocationsList, salesLogs, targetDoc] = await Promise.all([
-      oppColl.find({
-        owner_name: regexName,
-        stage: { $in: ['Written / Sold', 'In Delivery', 'Delivered / Won'] },
-      }).toArray().catch(() => []),
-      oppColl.find({
-        owner_name: regexName,
-        stage: { $in: ['New / Allocated', 'Working', 'Appointment', 'Negotiation'] },
-      }).toArray().catch(() => []),
-      oppColl.find({ owner_name: regexName }).toArray().catch(() => []),
-      allocColl.find({ assigned_to: regexName }).toArray().catch(() => []),
-      salesLogColl.find({ consultant: regexName }).toArray().catch(() => []),
-      targetsColl.findOne({ consultant: regexName }).catch(() => null),
-    ]);
-
-    const writtenUnitsMtd = writtenOpps.length || (salesLogs.length > 0 ? salesLogs.length : 14);
-    const targetUnits = targetDoc?.targetUnits || 18;
-    
-    // Sum gross from sales logs or written opps
-    const writtenGrossMtd = salesLogs.reduce((acc, s) => acc + (s.gross || s.amount * 0.075 || 0), 0)
-      || writtenOpps.reduce((acc, o) => acc + (o.total_deal_value || 60000), 0)
-      || 68400;
-
-    const totalHandled = totalOpps.length + allocationsList.length;
-    const conversionRatePct = totalHandled > 0 ? Math.round((writtenUnitsMtd / totalHandled) * 100) : 38.2;
-    const pacePercentage = Math.round((writtenUnitsMtd / Math.max(1, targetUnits)) * 100);
-
-    return {
-      consultant: consultantName,
-      writtenUnitsMtd,
-      targetUnits,
-      pacePercentage,
-      writtenGrossMtd: Math.round(writtenGrossMtd),
-      conversionRatePct,
-      avgFirstTouchMinutes: 8.8,
-      openDealsCount: openOpps.length || 22,
-      overdueCount: openOpps.filter((o) => o.is_overdue).length,
-    };
+    return require('./crmLive').boards(deliveryConn.db, query, user, false);
+  },
+  async getBoardTeam(query = {}, user = {}) {
+    await ensureDbConnected();
+    return require('./crmLive').boards(deliveryConn.db, query, user, true);
+  },
+  async getTargets(query = {}, user = {}) {
+    await ensureDbConnected();
+    return deliveryConn.db.collection('crmtargets').find(require('./crmBrowsing').siteScope(query, user)).toArray();
+  },
+  async updateTarget(data = {}, user = {}) {
+    await ensureDbConnected();
+    return require('./crmLive').updateTarget(deliveryConn.db, data, user);
   },
 
-  async getBoardTeam(query = {}) {
-    await ensureDbConnected();
-    const oppColl = deliveryConn.db.collection('opportunities');
-    const salesLogColl = deliveryConn.db.collection('saleslogentries');
-    const targetsColl = deliveryConn.db.collection('crmtargets');
-
-    const consultantsList = [
-      { name: 'Alex Rivers', site: 'Fairfield', defaultTarget: 18 },
-      { name: 'Elena Rostova', site: 'Melbourne City', defaultTarget: 20 },
-      { name: 'Harrison Reed', site: 'Fairfield', defaultTarget: 16 },
-      { name: 'Marcus Vance', site: 'Caroline Springs', defaultTarget: 18 },
-      { name: 'Sarah Chen', site: 'Fairfield', defaultTarget: 15 },
-    ];
-
-    const results = await Promise.all(
-      consultantsList.map(async (c) => {
-        const regexName = new RegExp(c.name, 'i');
-        const [writtenOpps, openOpps, totalOpps, salesLogs, targetDoc] = await Promise.all([
-          oppColl.find({ owner_name: regexName, stage: { $in: ['Written / Sold', 'In Delivery', 'Delivered / Won'] } }).toArray().catch(() => []),
-          oppColl.find({ owner_name: regexName, stage: { $in: ['New / Allocated', 'Working', 'Appointment', 'Negotiation'] } }).toArray().catch(() => []),
-          oppColl.find({ owner_name: regexName }).toArray().catch(() => []),
-          salesLogColl.find({ consultant: regexName }).toArray().catch(() => []),
-          targetsColl.findOne({ consultant: regexName }).catch(() => null),
-        ]);
-
-        const written_units_mtd = writtenOpps.length || (salesLogs.length > 0 ? salesLogs.length : 14);
-        const target_units = targetDoc?.targetUnits || c.defaultTarget;
-        const written_gross_mtd = Math.round(
-          salesLogs.reduce((acc, s) => acc + (s.gross || s.amount * 0.075 || 0), 0) ||
-          writtenOpps.reduce((acc, o) => acc + (o.total_deal_value || 60000), 0) ||
-          (written_units_mtd * 4800)
-        );
-
-        return {
-          name: c.name,
-          site: c.site,
-          written_units_mtd,
-          target_units,
-          written_gross_mtd,
-          open_deals_count: openOpps.length || 20,
-          overdue_actions_count: openOpps.filter((o) => o.is_overdue).length,
-          conversion_rate_pct: totalOpps.length > 0 ? Math.round((written_units_mtd / totalOpps.length) * 100) : 38,
-          avg_first_touch_minutes: 8.5,
-        };
-      })
-    );
-
-    const totalUnits = results.reduce((acc, r) => acc + r.written_units_mtd, 0);
-    const totalTarget = results.reduce((acc, r) => acc + r.target_units, 0);
-    const totalGross = results.reduce((acc, r) => acc + r.written_gross_mtd, 0);
-
-    return {
-      consultants: results,
-      totalDepartmentUnits: totalUnits,
-      totalDepartmentTarget: totalTarget,
-      totalDepartmentGross: totalGross,
-      averageConversionRate: Math.round(results.reduce((acc, r) => acc + r.conversion_rate_pct, 0) / results.length),
-    };
-  },
-
-  async getTargets(query = {}) {
-    await ensureDbConnected();
-    const targetsColl = deliveryConn.db.collection('crmtargets');
-    return await targetsColl.find({}).toArray().catch(() => []);
-  },
-
-  async updateTarget(data = {}) {
-    await ensureDbConnected();
-    const targetsColl = deliveryConn.db.collection('crmtargets');
-    const consultant = data.consultant || data.name;
-    if (!consultant) throw new Error('Consultant name is required');
-    const targetUnits = Number(data.targetUnits || data.targetUnitCount || data.target_units || 18);
-    
-    await targetsColl.updateOne(
-      { consultant: new RegExp(consultant, 'i') },
-      {
-        $set: {
-          consultant,
-          targetUnits,
-          updatedAt: new Date(),
-        },
-      },
-      { upsert: true }
-    );
-    return { consultant, targetUnits };
-  },
 };
 
 module.exports = crmService;

@@ -24,6 +24,8 @@ const userSchema = new mongoose.Schema(
         'sales_consultant',
         'bdc',
         'delivery',
+        'delivery_consultant',
+        'contractor',
       ],
       default: 'consultant',
     },
@@ -31,6 +33,11 @@ const userSchema = new mongoose.Schema(
     site: { type: String, default: '' },
     // When set, the user can only see/act on data for this site (enforced server-side)
     locked_site: { type: String, default: '' },
+    allowed_sites: { type: [String], default: undefined },
+    all_sites: { type: Boolean, default: undefined },
+    platform_access: { type: [String], default: undefined },
+    auth_version: { type: Number, default: 0 },
+    deleted_at: { type: Date, default: null },
     // Cross-site lookup privilege for managers/site admins (§4)
     network_lookup: { type: Boolean, default: false },
     active: { type: Boolean, default: true },

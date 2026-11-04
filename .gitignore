@@ -26,6 +26,7 @@ Thumbs.db
 *.swo
 
 # Temporary / Coverage files
+.runtime/
 tmp/
 temp/
 coverage/

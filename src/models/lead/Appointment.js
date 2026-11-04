@@ -7,6 +7,14 @@ const { leadConn } = require('../../db');
 const appointmentSchema = new mongoose.Schema(
   {
     when: { type: String, required: true },
+    appointmentId: { type: String, default: null, index: true },
+    bookingRequestId: { type: String },
+    bookingOwner: { type: String },
+    bookingFingerprint: { type: String },
+    virtualyard: { type: mongoose.Schema.Types.Mixed, default: null },
+    virtualyardSync: { type: mongoose.Schema.Types.Mixed, default: null },
+    testDriveDate: { type: Date, default: null },
+    platform: { type: String, default: 'manual' },
     prospectName: { type: String, required: true },
     phone: { type: String, default: '0491 570 204' },
     type: {
@@ -19,12 +27,12 @@ const appointmentSchema = new mongoose.Schema(
     bookedBy: { type: String, enum: ['AI', 'Agent', 'Manual'], default: 'AI' },
     status: {
       type: String,
-      enum: ['Proposed', 'Confirmed', 'Completed', 'Cancelled', 'No Show'],
+      enum: ['Proposed', 'Pending', 'Confirmed', 'In-Progress', 'Completed', 'Rescheduled', 'Cancelled', 'No Show'],
       default: 'Confirmed',
     },
     leadId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'Lead',
+      // Existing manual appointments use ObjectIds; imports use external string IDs.
+      type: mongoose.Schema.Types.Mixed,
       required: false,
     },
     consultantName: { type: String, default: '' },
@@ -38,6 +46,7 @@ const appointmentSchema = new mongoose.Schema(
 );
 
 appointmentSchema.index({ when: 1 });
+appointmentSchema.index({ bookingRequestId: 1 }, { unique: true, sparse: true });
 appointmentSchema.index({ leadId: 1 });
 appointmentSchema.index({ status: 1 });
 appointmentSchema.index({ consultantName: 1 });

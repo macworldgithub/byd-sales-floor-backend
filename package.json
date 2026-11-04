@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
-    "lint": "eslint src/"
+    "lint": "eslint src/",
+    "import:virtualyard": "node scripts/virtualyard/upsert-both.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
