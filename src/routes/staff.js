@@ -84,4 +84,53 @@ router.get('/', authenticate, async (req, res, next) => {
   }
 });
 
+// Live in-memory presence tracking for geofenced staff (§4, §7)
+const STAFF_PRESENCE = new Map();
+
+// ─── POST /api/staff/geofence-update ─────────────────────────────────────────
+router.post('/geofence-update', authenticate, async (req, res, next) => {
+  try {
+    const { isInsideGeofence, site, latitude, longitude, activity } = req.body;
+    const userId = req.user._id ? req.user._id.toString() : req.user.id;
+    const presenceData = {
+      userId,
+      name: req.user.name || 'Sales Consultant',
+      email: req.user.email,
+      role: req.user.role || 'sales_consultant',
+      site: site || req.user.site || 'BYD Nunawading',
+      isInsideGeofence: Boolean(isInsideGeofence),
+      status: isInsideGeofence ? 'On-Site' : 'Off-Site',
+      activity: activity || (isInsideGeofence ? 'Showroom Floor' : 'Test Drive Loop'),
+      latitude,
+      longitude,
+      lastUpdated: new Date().toISOString(),
+    };
+
+    STAFF_PRESENCE.set(userId, presenceData);
+
+    return res.json({
+      success: true,
+      message: `Geofence updated: ${req.user.name} is ${presenceData.status} (${presenceData.activity})`,
+      data: presenceData,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── GET /api/staff/presence ────────────────────────────────────────────────
+router.get('/presence', authenticate, async (req, res, next) => {
+  try {
+    const presenceList = Array.from(STAFF_PRESENCE.values());
+    return res.json({
+      success: true,
+      data: presenceList,
+      totalOnSite: presenceList.filter((p) => p.isInsideGeofence).length,
+      totalOffSite: presenceList.filter((p) => !p.isInsideGeofence).length,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 module.exports = router;

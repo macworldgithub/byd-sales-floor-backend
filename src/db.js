@@ -19,7 +19,7 @@ if (!DELIVERY_URI) {
 }
 
 const connectionOptions = {
-  serverSelectionTimeoutMS: 5000,
+  serverSelectionTimeoutMS: 15000,
   socketTimeoutMS: 45000,
   maxPoolSize: 10,
   minPoolSize: 0,
@@ -126,8 +126,7 @@ async function ensureIndexes() {
 
 // Automatically trigger index verification on DB connect
 deliveryConn.on('connected', () => {
-  ensureIndexes().catch(() => {});
+  ensureIndexes().catch(() => { });
 });
 
 module.exports = { leadConn, deliveryConn, ensureDbConnected, ensureIndexes };
-
