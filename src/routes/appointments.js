@@ -17,6 +17,18 @@ const { appointmentReferenceFilter, leadReferenceFilter } = require('../services
 
 const router = express.Router();
 router.use(authenticate);
+const scopeForFloor = req => req.user.platform === 'sales_floor'
+  ? require('../services/crmBrowsing').siteScope({}, require('../services/floorBrowsing').accountScope(req.user), ['site', 'dealership', 'location']) : {};
+router.use(async (req, res, next) => {
+  try {
+    const match = /^\/([a-f\d]{24})(?:\/|$)/i.exec(req.path);
+    if (req.user.platform === 'sales_floor' && match && !require('../services/floorBrowsing').isAdmin(req.user)) {
+      const record = await Appointment.findOne({ $and: [{ _id: match[1] }, scopeForFloor(req)] }).select('_id').lean();
+      if (!record) return res.status(404).json({ success: false, message: 'Appointment not found.' });
+    }
+    next();
+  } catch (error) { next(error); }
+});
 
 const audit = (req, leadId, message) =>
   AuditTrail.create({ message, actor: req.user.email, leadId, ip: req.ip }).catch(() => {});
@@ -36,7 +48,7 @@ router.get('/', async (req, res, next) => {
       sort = 'when',
     } = req.query;
 
-    const filter = {};
+    const filter = scopeForFloor(req);
 
     // Scope consultants to their own appointments
     if (req.user.role === 'consultant') {
@@ -102,6 +114,7 @@ router.post(
 
       const apptData = {
         ...req.body,
+        dealership: req.user.locked_site || req.body.dealership || req.user.site || '',
         consultantName: req.body.consultantName || req.user.name || req.user.email,
         bookedBy: req.body.bookedBy || 'Agent',
       };
@@ -221,7 +234,7 @@ const generateIcs = (appts) => {
 router.get('/export.ics', async (req, res, next) => {
   try {
     const { consultantName, from } = req.query;
-    const filter = { status: { $ne: 'Cancelled' } };
+    const filter = { ...scopeForFloor(req), status: { $ne: 'Cancelled' } };
     if (consultantName) {
       filter.consultantName = { $regex: consultantName, $options: 'i' };
     }

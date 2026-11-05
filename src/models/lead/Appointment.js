@@ -16,7 +16,7 @@ const appointmentSchema = new mongoose.Schema(
     testDriveDate: { type: Date, default: null },
     platform: { type: String, default: 'manual' },
     prospectName: { type: String, required: true },
-    phone: { type: String, default: '0491 570 204' },
+    phone: { type: String, default: '' },
     type: {
       type: String,
       enum: ['Test Drive', 'Callback', 'Showroom Visit'],
@@ -39,6 +39,7 @@ const appointmentSchema = new mongoose.Schema(
     notes: { type: String, default: '' },
     // Duration in minutes
     durationMinutes: { type: Number, default: 45 },
+    floorCategory: { type: String, enum: ['drive', 'delivery', 'followup', 'hold'] },
     // Location (e.g. showroom bay, test drive loop)
     location: { type: String, default: '' },
   },

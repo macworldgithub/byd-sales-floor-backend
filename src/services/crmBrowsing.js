@@ -137,6 +137,12 @@ async function leads(db, query = {}, user = {}) {
         'stockNum',
       ].map((field) => ({ [field]: regex(query.q) })),
     });
+  if (active(query.model)) conditions.push({ $or: [{ model: regex(query.model) }, { vehicle: regex(query.model) }] });
+  if (query.receivedAfter) {
+    const stamp = new Date(query.receivedAfter);
+    if (Number.isNaN(stamp.getTime())) fail('Select a valid received timestamp.');
+    conditions.push({ $expr: { $gte: [convertDate(fallback('$leadDate', '$leadCreatedDate', '$createdAt')), stamp] } });
+  }
   const received = convertDate(
     fallback('$leadDate', '$leadCreatedDate', '$createdAt')
   );
@@ -196,6 +202,7 @@ async function leads(db, query = {}, user = {}) {
       platforms: ['platform'],
       owners: ['assignedTo', 'allocatedPersonFullName'],
       yards: ['dealer', 'site', 'dealerName'],
+      models: ['model', 'vehicle'],
     }),
   ]);
   return { success: true, data, pagination, meta: { filters } };
@@ -394,7 +401,11 @@ function scheduled(value, time) {
           onNull: null,
         },
       },
-      convertDate(value),
+      { $cond: [
+        { $regexMatch: { input: { $convert: { input: value, to: 'string', onError: '', onNull: '' } }, regex: /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/ } },
+        { $dateFromString: { dateString: value, timezone: 'Australia/Melbourne', onError: null, onNull: null } },
+        convertDate(value),
+      ] },
     ],
   };
 }
@@ -407,7 +418,7 @@ function eventPipelines(databases, query, user) {
     fail('Calendar range must be between 1 and 93 days.');
   if (
     query.category &&
-    !['all', 'drive', 'followup', 'delivery'].includes(query.category)
+    !['all', 'drive', 'followup', 'delivery', 'hold'].includes(query.category)
   )
     fail('Invalid calendar category.');
   const definitions = [
@@ -418,7 +429,7 @@ function eventPipelines(databases, query, user) {
       siteFields: ['site', 'dealership', 'location'],
       project: {
         stamp: scheduled(fallback('$testDriveDate', '$when'), '09:00'),
-        type: {
+        type: { $ifNull: ['$floorCategory', {
           $switch: {
             branches: [
               { case: { $eq: ['$type', 'Handover'] }, then: 'delivery' },
@@ -426,7 +437,7 @@ function eventPipelines(databases, query, user) {
             ],
             default: 'drive',
           },
-        },
+        }] },
         label: fallback('$type', 'Test Drive'),
         customer_id: fallback('$customer_id', '$leadId'),
         customer_name: fallback('$prospectName', '$customer_name', 'Customer'),
@@ -589,6 +600,10 @@ async function calendar(databases, query = {}, user = {}) {
           ...source.base,
           {
             $facet: {
+              next: [
+                { $match: { $and: [source.filtered[source.filtered.length - 1].$match, { stamp: { $gte: new Date() }, status: { $nin: ['Cancelled', 'Completed', 'No Show', 'Delivered', 'Delivered / Won', 'Lost / Parked'] } }] } },
+                { $sort: { stamp: 1, _id: 1 } }, { $limit: 1 },
+              ],
               total: [
                 { $match: source.filtered[source.filtered.length - 1].$match },
                 { $count: 'count' },
@@ -610,6 +625,7 @@ async function calendar(databases, query = {}, user = {}) {
       return {
         total: result?.total[0]?.count || 0,
         filters: result?.filters[0] || {},
+        next: result?.next?.[0] ? calendarEvent(result.next[0], source.source) : null,
       };
     })
   );
@@ -658,6 +674,8 @@ async function calendar(databases, query = {}, user = {}) {
         statuses: values('statuses'),
         yards: values('yards'),
       },
+      sourceCounts: Object.fromEntries(sources.map((source, index) => [source.source, stats[index].total])),
+      nextEvent: stats.map(stat => stat.next).filter(Boolean).sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id))[0] || null,
       timezone: 'Australia/Melbourne',
     },
   };

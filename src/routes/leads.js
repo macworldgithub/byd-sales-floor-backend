@@ -20,6 +20,16 @@ const router = express.Router();
 
 // All lead routes require authentication
 router.use(authenticate);
+router.use(async (req, res, next) => {
+  try {
+    const match = /^\/([a-f\d]{24})(?:\/|$)/i.exec(req.path);
+    if (req.user.platform === 'sales_floor' && match && !require('../services/floorBrowsing').isAdmin(req.user)) {
+      const record = await Lead.findOne({ $and: [{ _id: match[1] }, require('../services/floorBrowsing').leadScope(req.user)] }).select('_id').lean();
+      if (!record) return res.status(404).json({ success: false, message: 'Lead not found.' });
+    }
+    next();
+  } catch (error) { next(error); }
+});
 
 // ─── Helper: write audit trail ─────────────────────────────────────────────
 const audit = (req, leadId, message, action = '') =>
@@ -34,6 +44,10 @@ const audit = (req, leadId, message, action = '') =>
 // ─── GET /api/leads ────────────────────────────────────────────────────────
 router.get('/', async (req, res, next) => {
   try {
+    if (req.user.platform === 'sales_floor') {
+      res.set('Cache-Control', 'private, no-store');
+      return res.json(await require('../services/floorBrowsing').leads({ lead: require('../db').leadConn.db }, req.query, req.user));
+    }
     const {
       page = 1,
       limit = 50,
@@ -124,6 +138,7 @@ router.post(
 
       const leadData = {
         ...req.body,
+        dealer: req.user.locked_site || (req.user.platform === 'sales_floor' && !require('../services/floorBrowsing').isAdmin(req.user) ? req.user.site : req.body.dealer) || req.user.site || '',
         // Auto-assign to the creating consultant
         assignedTo: req.body.assignedTo || req.user.email,
         allocatedPersonFullName:

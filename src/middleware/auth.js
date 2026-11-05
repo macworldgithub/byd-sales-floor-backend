@@ -43,11 +43,14 @@ const authenticate = async (req, res, next) => {
     if (!hasPlatform(account, platform) || (req.baseUrl === '/api/crm' && !hasPlatform(account, 'crm'))) {
       return res.status(403).json({ success: false, message: 'This account does not have access to this platform.' });
     }
+    const floorAdminRead = platform === 'sales_floor' && req.method === 'GET' &&
+      ['super_admin', 'admin', 'site_admin'].includes(normalizeRole(account.role)) &&
+      /^\/api\/(floor|leads|appointments|stats|me)(?:\/|\?|$)/.test(req.originalUrl || req.baseUrl || '');
     const requestedSite = req.headers['x-site'] || req.query.site || req.query.yard || req.query.location || req.query.dealership || req.body?.site;
-    const locked_site = resolveSite(account, requestedSite);
+    const locked_site = floorAdminRead ? '' : resolveSite(account, requestedSite);
     req.user = { ...decoded, id: String(account._id), email: account.email, name: account.name, role: normalizeRole(account.role), site: account.site,
       locked_site, network_lookup: !locked_site && !!account.network_lookup, platform, allowed_sites: account.allowed_sites, all_sites: account.all_sites, platform_access: account.platform_access };
-    if (Array.isArray(account.allowed_sites) && !account.all_sites && req.originalUrl) {
+    if (!floorAdminRead && Array.isArray(account.allowed_sites) && !account.all_sites && req.originalUrl) {
       const { deliveryConn, leadConn } = require('../db');
       await require('../services/resourceSiteAccess').guardResourceSites(req, { panel: deliveryConn.db, lead: leadConn.db });
     }

@@ -11,11 +11,11 @@ function load(filename, mocks) {
     require(name) { return name in mocks ? mocks[name] : require(name.startsWith('.') ? path.resolve(path.dirname(filename), name) : name); } }, { filename });
   return module.exports;
 }
-async function authorize(account, { version = 1, platform = 'crm', site, claims = {} } = {}) {
+async function authorize(account, { version = 1, platform = 'crm', site, claims = {}, method = 'GET', originalUrl, baseUrl = '/api/crm' } = {}) {
   const filename = path.resolve(__dirname, '../src/middleware/auth.js');
   const auth = load(filename, { '../models/delivery/User': { findById() { return { async lean() { return account; } }; } } });
   const token = jwt.sign({ id: '123', role: 'super_admin', email: 'devs@omnisuiteai.com', auth_version: version, platform, ...claims }, process.env.JWT_SECRET || 'change_me_in_production');
-  const req = { headers: { authorization: `Bearer ${token}`, ...(site ? { 'x-site': site } : {}) }, query: {}, body: {}, method: 'GET', baseUrl: '/api/crm' };
+  const req = { headers: { authorization: `Bearer ${token}`, ...(site ? { 'x-site': site } : {}) }, query: {}, body: {}, method, baseUrl, originalUrl };
   const result = { status: 200, accepted: false, req };
   const res = { status(code) { result.status = code; return this; }, json(body) { result.body = body; return this; } };
   await auth.authenticate(req, res, error => { if (error) throw error; result.accepted = true; });
@@ -46,4 +46,15 @@ test('requests can select an assigned site but cannot select an unassigned site'
   assert.equal(valid.req.query.site, 'BYD Nunawading');
   const invalid = await authorize(account(), { site: 'Denza Melbourne' });
   assert.equal(invalid.status, 403);
+});
+
+test('global Sales Floor admin browsing does not expand staff, other platforms or write permissions', async () => {
+  const admin = { ...account(), role: 'admin', platform_access: ['sales_floor', 'crm'] };
+  const options = { platform: 'sales_floor', site: 'Denza Melbourne', originalUrl: '/api/floor/leads', baseUrl: '/api/floor' };
+  const result = await authorize(admin, options);
+  assert.equal(result.accepted, true);
+  assert.equal(result.req.user.locked_site, '');
+  assert.equal((await authorize({ ...admin, role: 'agent' }, options)).status, 403);
+  assert.equal((await authorize(admin, { ...options, method: 'POST' })).status, 403);
+  assert.equal((await authorize(admin, { ...options, platform: 'crm', originalUrl: '/api/crm/leads', baseUrl: '/api/crm' })).status, 403);
 });

@@ -129,6 +129,7 @@ app.get('/api/health', (req, res) => {
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/admin/users', require('./routes/users'));
 app.use('/api/leads', require('./routes/leads'));
+app.use('/api/floor', require('./routes/floor'));
 app.use('/api/appointments', require('./routes/appointments'));
 app.use('/api/conversations', require('./routes/conversations'));
 app.use('/api/inventory', require('./routes/inventory'));
