@@ -45,7 +45,7 @@ for (const route of ['../src/routes/staff.js']) {
     const db = { collection() { return { find() { return { async toArray() { return []; } }; } }; } };
     const chain = { select() { return this; }, sort() { return this; }, async lean() { return []; } };
     const userModel = { db, find(filter) { query = filter; return chain; } };
-    const router = { get(_path, _auth, callback) { handler = callback; } };
+    const router = { get(routePath, _auth, callback) { if (routePath === '/') handler = callback; }, post() {} };
     const filename = path.resolve(__dirname, route);
     const moduleFixture = { exports: {} };
     vm.runInNewContext(fs.readFileSync(filename, 'utf8'), {
