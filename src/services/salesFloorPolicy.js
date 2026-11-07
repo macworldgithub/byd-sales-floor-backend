@@ -17,7 +17,10 @@ function stage(value) {
   return result;
 }
 function scope(user, query = {}, fields = ['dealer', 'site']) {
-  const selected = user.locked_site || query.site || user.site;
+  let selected = user.locked_site || query.site || user.site;
+  if (selected === 'BYD Dealership' || !selected) {
+    selected = (user.all_sites && isManager(user)) ? 'All Sites' : (user.allowed_sites?.[0] || 'BYD Melbourne City');
+  }
   if (selected && !/^all(?:\s|$)/i.test(selected) && !canonicalSite(selected)?.startsWith('BYD')) fail(403, 'This mobile workspace is configured for BYD sites.');
   if (!selected || /^all(?:\s|$)/i.test(selected)) {
     if (!isManager(user) || !user.all_sites) fail(403, 'Select an assigned site.');

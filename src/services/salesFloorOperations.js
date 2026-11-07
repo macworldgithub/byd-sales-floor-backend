@@ -8,12 +8,12 @@ class SalesFloorOperations extends SalesFloorMobile {
   async summary(query, user) {
     const bounds = p.period(query.period), site = user.locked_site || query.site || user.site;
     const [leads, appointments, deals, events, targets, tasks] = await Promise.all([
-      this.lead.collection('leads').find(this.filter(user, query)).toArray(),
-      this.lead.collection('appointments').find(this.filter(user, query, 'appointments')).toArray(),
-      this.lead.collection('deals').find(this.filter(user, query, 'deals')).toArray(),
-      this.panel.collection('timelineevents').find(p.scope(user, query, ['site'])).toArray(),
+      this.lead.collection('leads').find(this.filter(user, query)).limit(1000).toArray(),
+      this.lead.collection('appointments').find(this.filter(user, query, 'appointments')).limit(200).toArray(),
+      this.lead.collection('deals').find(this.filter(user, query, 'deals')).limit(200).toArray(),
+      this.panel.collection('timelineevents').find(and(p.scope(user, query, ['site']), { createdAt: { $gte: bounds.from, $lte: bounds.to } })).limit(200).toArray(),
       this.panel.collection('crmtargets').find(and(p.scope(user, query, ['site']), { period: bounds.month })).toArray(),
-      this.panel.collection('floor_tasks').find(and(p.scope(user, query, ['site']), { status: 'open' })).toArray(),
+      this.panel.collection('floor_tasks').find(and(p.scope(user, query, ['site']), { status: 'open' })).limit(100).toArray(),
     ]);
     const inPeriod = row => timed(row, bounds.from, bounds.to);
     const config = await this.config(site);
@@ -73,16 +73,7 @@ class SalesFloorOperations extends SalesFloorMobile {
     await this.lead.collection('leads').updateOne({ _id: lead._id }, { $max: { lastEngagementAt: at } });
   }
   async alerts(query, user) {
-    const leads = await this.lead.collection('leads').find(this.filter(user, query)).toArray();
-    for (const lead of leads.filter(p.active)) {
-      const config = await this.config(lead.dealer || lead.site);
-      const last = lead.lastEngagementAt || lead.lastContactAt || lead.createdAt;
-      if (last && Date.now() - new Date(last).getTime() >= 3 * 86400000 && config.alertTypes.includes('high_risk')) {
-        const reason = lead.lastQuoteAt ? 'No response after quote' : lead.lastTestDriveAt ? 'No response after test drive' : 'No customer engagement for 3+ days';
-        await this.notify(lead, 'high_risk', `High Risk · ${lead.name}`, reason, `inactive:${id(lead)}:${new Date(last).toISOString()}`);
-      }
-    }
-    return this.panel.collection('floor_notifications').find(p.scope(user, query, ['site'])).sort({ createdAt: -1 }).limit(200).toArray();
+    return this.panel.collection('floor_notifications').find(p.scope(user, query, ['site'])).sort({ createdAt: -1 }).limit(100).toArray();
   }
   async readAlert(value, user) {
     await this.panel.collection('floor_notifications').updateOne(and(p.scope(user, {}, ['site']), { _id: String(value) }), { $set: { read: true, readAt: new Date() } });

@@ -40,7 +40,10 @@ router.use((req, res, next) => {
   if (req.user.role === 'contractor' && !/^\/(bootstrap|staff|presence|notifications|media|deliveries|push-token|push-test|push-receipts)(?:\/|$)/.test(req.path)) return res.status(403).json({ success: false, message: 'Contractors can access only assigned delivery work and presence.' });
   // All-site accounts have no lock. Their selected mobile site still needs to
   // scope record reads and writes, including endpoints without a query string.
-  const selected = req.user.locked_site || req.headers['x-site'];
+  let selected = req.user.locked_site || req.headers['x-site'];
+  if (selected === 'BYD Dealership') {
+    selected = (req.user.all_sites && p.isManager(req.user)) ? 'All Sites' : (req.user.allowed_sites?.[0] || 'BYD Melbourne City');
+  }
   if (selected) {
     try { p.scope(req.user, { site: selected }); }
     catch (error) { return next(error); }

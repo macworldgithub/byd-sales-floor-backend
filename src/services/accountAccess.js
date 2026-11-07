@@ -3,8 +3,16 @@ const PLATFORMS = ['crm', 'sales_floor', 'lead_centre', 'delivery_centre'];
 const SITES = ['BYD Melbourne City', 'BYD Caroline Springs', 'BYD Nunawading', 'BYD Fairfield', 'BYD Doncaster', 'Denza Melbourne', 'Holding Yard VIC', 'Clayton South', 'BYD Wodonga', 'BYD Wollongong', 'BYD Haberfield', 'BYD Berwick', 'BYD Nowra', 'BYD Frankston', 'BYD Campbelltown'];
 const ROLES = ['sales_consultant', 'sales_manager', 'bdc', 'delivery', 'site_admin', 'super_admin', 'agent', 'contractor'];
 const emailKey = value => String(value || '').trim().toLowerCase();
-const siteKey = value => String(value || '').trim().toLowerCase().replace(/^byd\s+/, '').replace(/\s+vic$/, '').replace(/[^a-z0-9]/g, '').replace(/^melbourne$/, 'melbournecity');
-const canonicalSite = value => SITES.find(site => siteKey(site) === siteKey(value));
+const siteKey = value => {
+  const normalized = String(value || '').trim().toLowerCase().replace(/^byd\s+/, '').replace(/\s+vic$/, '').replace(/[^a-z0-9]/g, '').replace(/^melbourne$/, 'melbournecity');
+  if (normalized === 'dealership' || normalized === 'byddealership') return 'melbournecity';
+  return normalized;
+};
+const canonicalSite = value => {
+  if (!value) return undefined;
+  if (/^all(?:\s|$)/i.test(value)) return 'All Sites';
+  return SITES.find(site => siteKey(site) === siteKey(value));
+};
 const canManageUsers = user => emailKey(user?.email) === OWNER_EMAIL && user?.role === 'super_admin';
 const fail = (statusCode, message) => { throw Object.assign(new Error(message), { statusCode }); };
 function hasPlatform(user, platform) {
