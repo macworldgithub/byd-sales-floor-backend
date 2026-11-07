@@ -53,7 +53,7 @@ app.use(cors({
     return callback(null, false);
   },
   credentials: true,
-  methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+  methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Site']
 }));
 app.use(express.json({ limit: '15mb' }));
@@ -130,6 +130,7 @@ app.use('/api/auth', require('./routes/auth'));
 app.use('/api/admin/users', require('./routes/users'));
 app.use('/api/leads', require('./routes/leads'));
 app.use('/api/floor', require('./routes/floor'));
+app.use('/api/mobile', require('./routes/mobile'));
 app.use('/api/appointments', require('./routes/appointments'));
 app.use('/api/conversations', require('./routes/conversations'));
 app.use('/api/inventory', require('./routes/inventory'));
@@ -166,8 +167,13 @@ const SLA_INTERVAL_MS = 5 * 60 * 1000;
 let slaIntervalTimer = null;
 let holdExpiryTimer = null;
 let nightlyReconcileTimer = null;
+let floorWorkerTimer = null;
 
 if (process.env.NODE_ENV !== 'test') {
+  floorWorkerTimer = setInterval(() => {
+    require('./services/floorWorker').tick(leadConn.db, deliveryConn.db).catch(error => console.error('Sales Floor activity worker:', error.message));
+  }, 60000);
+  floorWorkerTimer.unref();
   require('./services/virtualyardSession').start();
   // 1. SLA Auto-Escalation Engine
   slaIntervalTimer = setInterval(async () => {
@@ -220,6 +226,7 @@ const handleShutdown = async (signal) => {
   if (slaIntervalTimer) clearInterval(slaIntervalTimer);
   if (holdExpiryTimer) clearInterval(holdExpiryTimer);
   if (nightlyReconcileTimer) clearInterval(nightlyReconcileTimer);
+  if (floorWorkerTimer) clearInterval(floorWorkerTimer);
   if (server) {
     server.close(async () => {
       console.log('✅ HTTP server closed. Closing MongoDB connections...');

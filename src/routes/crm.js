@@ -495,15 +495,8 @@ router.get('/vy/stock', async (req, res, next) => {
   }
 });
 
-router.post('/vy/hold', async (req, res, next) => {
-  try {
-    const { stockId, opportunityId, consultantName } = req.body;
-    const rep = consultantName || req.user?.name || '';
-    const held = await crmService.holdStock(stockId, opportunityId, rep);
-    res.json({ success: true, message: 'Stock reserved for 48 hours', data: held });
-  } catch (err) {
-    next(err);
-  }
+router.post('/vy/hold', (req, res) => {
+  res.status(410).json({ success: false, message: 'Soft holds have been removed. Register a deal to reserve stock as Deal Pending.' });
 });
 
 router.post('/vy/release', async (req, res, next) => {

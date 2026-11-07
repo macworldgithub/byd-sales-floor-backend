@@ -89,13 +89,21 @@ async function prepare(data, user = {}) {
   };
   const vehicle = choose(vehicles.filter(row => row.locationId === yard.id), selected.vehicleId, data.vehicle, 'demo vehicle');
   const salesperson = choose(users, selected.userId, data.consultantName || user.name, 'salesperson');
-  const customer = choose(customers, selected.customerId, data.prospectName || data.customer_name, 'driver');
   const status = selected.status || ({ Proposed: 'P', Pending: 'P', Confirmed: 'C', 'In-Progress': 'I', Completed: 'F', Rescheduled: 'R', Cancelled: 'X', 'No Show': 'M' }[data.status || 'Confirmed']);
   const bookingType = selected.bookingType || 'T';
   if (!meta.statuses.some(row => row.id === status) || !meta.bookingTypes.some(row => row.id === bookingType)) fail(400, 'Invalid Virtual Yard booking type or status.');
+  const bookingDateTime = melbourneTime(data.when);
+  let customer;
+  if (data.createVirtualyardCustomer === true && !selected.customerId) {
+    const collection = require('../db').leadConn.db.collection('virtualyard_customer_requests');
+    customer = await require('./virtualyardCustomer').ensureCustomer({ name: data.prospectName || data.customer_name,
+      phone: data.phone, email: data.email, site, locationId: yard.id }, user, collection);
+  } else {
+    customer = choose(customers, selected.customerId, data.prospectName || data.customer_name, 'driver');
+  }
   return { vehicleId: vehicle.id, vehicleName: vehicle.name, userId: salesperson.id, userName: salesperson.name,
     customerId: customer.id, customerName: customer.name, locationId: yard.id, yardName: yard.name, status, bookingType,
-    bookingDateTime: melbourneTime(data.when) };
+    bookingDateTime };
 }
 
 function payload(appointment) {

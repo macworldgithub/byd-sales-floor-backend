@@ -99,7 +99,7 @@ async function getConfig() {
  * @param {string} [options.idempotencyKey] - Optional UUID to prevent duplicates
  * @returns {Promise<Object>} Send result
  */
-async function sendSms({ to, message, sender, customRef, idempotencyKey, requestedBy }) {
+async function sendSms({ to, message, sender, customRef, idempotencyKey, requestedBy, useSiteSender = false }) {
   if (typeof requestedBy !== 'string' || !requestedBy.trim()) {
     throw new Error('SMS must be sent manually by an authenticated staff member');
   }
@@ -113,7 +113,8 @@ async function sendSms({ to, message, sender, customRef, idempotencyKey, request
 
   const config = await getConfig();
   // An explicit deployment sender applies to every send, including legacy caller overrides.
-  const effectiveSender = process.env.MOBILEMESSAGE_SENDER_ID || sender || config.senderId || 'HARMONY';
+  const effectiveSender = useSiteSender ? sender : process.env.MOBILEMESSAGE_SENDER_ID || sender || config.senderId || 'HARMONY';
+  if (!effectiveSender) throw new Error('A verified sender is required.');
   const key = idempotencyKey || (crypto.randomUUID ? crypto.randomUUID() : `byd-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`);
 
   // Simulation must be explicitly enabled; missing credentials are a send failure.
@@ -155,6 +156,7 @@ async function sendSms({ to, message, sender, customRef, idempotencyKey, request
         'Idempotency-Key': key,
       },
       body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(20000),
     });
 
     const data = await res.json().catch(() => ({}));
@@ -170,6 +172,7 @@ async function sendSms({ to, message, sender, customRef, idempotencyKey, request
           'Idempotency-Key': key,
         },
         body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(20000),
       });
       const retryData = await retryRes.json().catch(() => ({}));
       if (!retryRes.ok) {
@@ -281,6 +284,7 @@ async function lookupMessage(messageId) {
   const authHeader = 'Basic ' + Buffer.from(`${config.username}:${config.password}`).toString('base64');
   const res = await fetch(`${config.apiUrl}/v1/messages?message_id=${encodeURIComponent(messageId)}`, {
     headers: { Authorization: authHeader },
+    signal: AbortSignal.timeout(15000),
   });
 
   const data = await res.json().catch(() => ({}));
@@ -291,10 +295,21 @@ async function lookupMessage(messageId) {
   return data;
 }
 
+async function getApprovedSenders() {
+  const config = await getConfig();
+  if (config.simulationMode || !config.username || !config.password) throw new Error('Live MobileMessage credentials are required.');
+  if (new URL(config.apiUrl).protocol !== 'https:') throw new Error('SMS provider must use HTTPS.');
+  const response = await fetch(`${config.apiUrl}/v1/senders`, { headers: { Authorization: 'Basic ' + Buffer.from(`${config.username}:${config.password}`).toString('base64') }, signal: AbortSignal.timeout(15000) });
+  const result = await response.json();
+  if (!response.ok || !Array.isArray(result.results)) throw new Error('Cannot verify approved SMS senders with MobileMessage.');
+  return result.results.filter(row => !row.status || row.status === 'active').map(row => ({ sender: row.sender, type: row.type, label: row.label || row.sender }));
+}
+
 module.exports = {
   normalizeAustralianPhone,
   getConfig,
   sendSms,
   testConnection,
   lookupMessage,
+  getApprovedSenders,
 };

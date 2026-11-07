@@ -9,7 +9,7 @@ async function book(document, input, user, collection) {
   const bookingOwner = String(user.id || user.email);
   const fingerprint = crypto.createHash('sha256').update(JSON.stringify([
     document.type, document.when, document.prospectName, document.customer_id, document.leadId,
-    document.site || document.dealership, document.vehicle, document.notes, input.virtualyard || null,
+    document.site || document.dealership, document.vehicle, document.notes, document.licenceId || null, input.virtualyard || null,
   ])).digest('hex');
   await collection.createIndex({ bookingRequestId: 1 }, { unique: true, sparse: true });
   const existing = await collection.findOne({ bookingRequestId });
@@ -26,6 +26,12 @@ async function book(document, input, user, collection) {
     document.site = prepared.yardName;
     document.dealership = prepared.yardName;
     document.status = virtualyard.LOCAL_STATUS[prepared.status];
+    if (document.leadId) {
+      const { leadConn, deliveryConn } = require('../db');
+      const { leadReferenceFilter } = require('./appointmentReference');
+      await leadConn.db.collection('leads').updateOne(leadReferenceFilter(String(document.leadId)), { $set: { vyCustomerId: prepared.customerId } });
+      if (document.customer_id) await deliveryConn.db.collection('customers').updateOne({ customer_id: document.customer_id }, { $set: { vy_customer_id: prepared.customerId } });
+    }
   }
   try {
     const result = await collection.insertOne(document);

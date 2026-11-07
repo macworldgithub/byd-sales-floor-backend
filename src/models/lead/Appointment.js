@@ -17,6 +17,8 @@ const appointmentSchema = new mongoose.Schema(
     platform: { type: String, default: 'manual' },
     prospectName: { type: String, required: true },
     phone: { type: String, default: '' },
+    email: { type: String, default: '' },
+    customer_id: { type: String, default: null },
     type: {
       type: String,
       enum: ['Test Drive', 'Callback', 'Showroom Visit'],

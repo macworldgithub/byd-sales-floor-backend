@@ -140,90 +140,14 @@ router.post('/', async (req, res, next) => {
 // ─── POST /api/deals/:id/push-virtualyard ───────────────────────────────────
 router.post('/:id/push-virtualyard', async (req, res, next) => {
   try {
-    const deal = await Deal.findOne({
-      $or: [{ dealId: req.params.id }, { _id: req.params.id.match(/^[0-9a-fA-F]{24}$/) ? req.params.id : null }],
-    });
-
-    if (!deal) return res.status(404).json({ success: false, message: 'Deal not found' });
-
-    const virtualYardOrderId = `VY-ORD-${Math.floor(100000 + Math.random() * 900000)}`;
-
-    // 1. Create Handover / Delivery record in Delivery Centre Client collection
-    let deliveryClient = null;
-    try {
-      deliveryClient = new Client({
-        name: deal.buyerName,
-        phone: deal.buyerPhone,
-        email: deal.buyerEmail,
-        vehicle: `${deal.vehicle.year || 2024} ${deal.vehicle.model} ${deal.vehicle.variant || ''}`.trim(),
-        vin: deal.vehicle.vin || `LGXCE4C88P${Math.floor(100000 + Math.random() * 900000)}`,
-        rego: 'NEW-DEL',
-        po_number: deal.dealId,
-        payment_method: deal.financials?.paymentMethod || 'Finance / Loan',
-        order_date: new Date().toISOString().split('T')[0],
-        sale_type: 'Retail',
-        trade_in_flag: deal.tradeIn?.hasTradeIn || false,
-        trade_in_status: deal.tradeIn?.hasTradeIn ? 'Accepted' : 'Pending',
-        status: 'Scheduled',
-        order_status: 'Scheduled',
-        comments: [
-          {
-            author_name: 'Virtual Yard Sync Engine',
-            body: `Pushed from Sales Floor Deal Registration (${deal.dealId}). Virtual Yard Order: ${virtualYardOrderId}`,
-          },
-        ],
-      });
-      await deliveryClient.save();
-    } catch (deliveryErr) {
-      console.error('Delivery record creation warning:', deliveryErr.message);
-    }
-
-    // 2. Update Deal record
-    deal.virtualYard = {
-      status: 'Pushed',
-      pushedAt: new Date(),
-      virtualYardOrderId,
-      syncMessage: 'Contract and delivery job synchronized with Virtual Yard DMS.',
-    };
-    deal.status = 'DMS Synced';
-    if (deliveryClient?._id) {
-      deal.delivery.deliveryClientId = deliveryClient._id.toString();
-      deal.delivery.status = 'Scheduled';
-    }
-    await deal.save();
-
-    // 3. Log event on customer CRM timeline
-    const customerTargetId = deal.customerId || deal.leadId;
-    if (customerTargetId) {
-      try {
-        await crmService.logEvent({
-          customer_id: customerTargetId,
-          type: 'Virtual Yard Sync',
-          headline: `Virtual Yard DMS Sync Completed: Order #${virtualYardOrderId}`,
-          body: `Contract initiated. Delivery record created in Delivery Centre Hub for ${deal.buyerName}.`,
-          user_id: req.user?._id || 'system',
-          author_name: 'DMS Connector',
-          site: deal.site,
-        });
-      } catch (err) {}
-    }
-
-    return res.json({
-      success: true,
-      message: `Deal registered in Virtual Yard (#${virtualYardOrderId}). Delivery workflow initiated in Delivery Centre.`,
-      data: {
-        dealId: deal.dealId,
-        virtualYardOrderId,
-        deliveryClientId: deliveryClient?._id,
-        status: deal.status,
-      },
-    });
-  } catch (err) {
-    next(err);
-  }
+    const { leadConn, deliveryConn } = require('../db');
+    const service = new (require('../services/salesFloorOperations').SalesFloorOperations)(leadConn.db, deliveryConn.db);
+    const data = await service.pushDeal(req.params.id, req.user);
+    res.json({ success: true, data });
+  } catch (error) { next(error); }
 });
 
-// ─── POST /api/deals/:id/push-erapower (Kia / Chery / Lepas §8, AC-8) ────────
+// Other-brand eraPower flow is outside this BYD change.
 router.post('/:id/push-erapower', async (req, res, next) => {
   try {
     const deal = await Deal.findOne({

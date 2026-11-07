@@ -20,7 +20,7 @@ const leadSchema = new mongoose.Schema(
     color: { type: String, enum: ['blue', 'green', 'amber', 'red'], default: 'blue' },
     stage: {
       type: String,
-      enum: ['NEW ENQUIRIES', 'IN FOLLOW-UP', 'AI QUALIFYING', 'TEST DRIVE BOOKED', 'DELIVERED', 'LOST', 'OPTED OUT'],
+      enum: ['NEW ENQUIRIES', 'IN FOLLOW-UP', 'AI QUALIFYING', 'TEST DRIVE BOOKED', 'COMMITTED', 'DELIVERED', 'LOST', 'OPTED OUT'],
       default: 'NEW ENQUIRIES',
     },
     status: {

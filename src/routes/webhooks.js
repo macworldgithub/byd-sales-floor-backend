@@ -46,6 +46,10 @@ router.post('/mobilemessage/inbound', async (req, res, next) => {
     const prospectName = matchedClient?.name || matchedLead?.name || 'Prospect (' + phone + ')';
     const leadId = matchedLead ? String(matchedLead._id) : null;
     const clientId = matchedClient ? String(matchedClient._id) : null;
+    if (matchedLead && require('../services/accountAccess').canonicalSite(site)?.startsWith('BYD')) {
+      const { leadConn } = require('../db');
+      await new (require('../services/salesFloorOperations').SalesFloorOperations)(leadConn.db, deliveryConn.db).ingestMessage(matchedLead, text, messageId, receivedAt(req.body));
+    }
 
     // 2. Record inbound message in Delivery Centre Message collection
     const inboundRecord = {
@@ -111,9 +115,9 @@ router.post('/mobilemessage/inbound', async (req, res, next) => {
     try {
       const { deliveryConn } = require('../db');
       const custColl = deliveryConn.db.collection('customers');
-      const targetCustomer = await custColl.findOne({
-        phone: { $regex: phone.slice(-8) },
-      });
+      const targetCustomer = matchedLead?.customerId || matchedLead?.customer_id
+        ? await custColl.findOne({ customer_id: matchedLead.customerId || matchedLead.customer_id })
+        : await custColl.findOne({ $and: [require('../services/salesFloorPolicy').scope({ role: 'manager', site }, {}, ['site']), { phone: { $regex: phone.slice(-8) } }] });
       if (targetCustomer) {
         const tlColl = deliveryConn.db.collection('timelineevents');
         const crypto = require('crypto');

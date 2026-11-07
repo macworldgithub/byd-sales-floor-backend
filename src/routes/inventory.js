@@ -350,43 +350,15 @@ router.get('/', async (req, res, next) => {
 });
 
 // ─── POST /api/inventory/:id/soft-hold (§5.6, §6.1 Soft Hold) ───────────────
-router.post('/:id/soft-hold', async (req, res, next) => {
-  try {
-    const { customerName, durationHours = 48, notes } = req.body;
-    const expiresAt = new Date(Date.now() + Number(durationHours) * 3600000);
-
-    const item = await Inventory.findByIdAndUpdate(
-      req.params.id,
-      {
-        $set: {
-          status: 'Held',
-          'holdDetails.heldBy': req.user?.name || req.user?.email || 'Sales Staff',
-          'holdDetails.customerName': customerName || 'Valued Prospect',
-          'holdDetails.expiresAt': expiresAt,
-          'holdDetails.notes': notes || 'Soft hold placed from Sales Floor',
-        },
-      },
-      { new: true }
-    );
-    if (!item) return res.status(404).json({ success: false, message: 'Vehicle not found.' });
-
-    invalidateCache();
-
-    return res.json({
-      success: true,
-      message: `Soft hold placed for ${customerName || 'customer'} (expires in ${durationHours}h)`,
-      data: item,
-    });
-  } catch (err) {
-    next(err);
-  }
+router.post('/:id/soft-hold', (req, res) => {
+  res.status(410).json({ success: false, message: 'Soft holds have been removed. Register a deal to mark stock as Deal Pending.' });
 });
 
 // ─── POST /api/inventory/:id/release-hold ───────────────────────────────────
 router.post('/:id/release-hold', async (req, res, next) => {
   try {
-    const item = await Inventory.findByIdAndUpdate(
-      req.params.id,
+    const item = await Inventory.findOneAndUpdate(
+      { _id: req.params.id, status: 'Held', dealId: { $in: [null] } },
       {
         $set: { status: 'Available' },
         $unset: { holdDetails: 1 },
