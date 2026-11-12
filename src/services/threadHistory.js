@@ -12,8 +12,10 @@ function siteKey(value) {
 function allowedSite(user, site) {
   if (!user || user.role === 'contractor') return false;
   if (user.locked_site) return !!siteKey(site) && siteKey(site) === siteKey(user.locked_site);
+  if (Array.isArray(user.allowed_sites) && !user.all_sites) return !!siteKey(site) && user.allowed_sites.some(s => siteKey(s) === siteKey(site));
+  if (user.all_sites === true) return !!siteKey(site);
   if (Array.isArray(user.sites) && user.sites.length) return user.sites.some(s => siteKey(s) === siteKey(site));
-  if (['super_admin', 'admin'].includes(user.role) || user.network_lookup) return true;
+  if (['super_admin', 'admin', 'site_admin'].includes(user.role) || user.network_lookup) return true;
   return !!siteKey(user.site) && siteKey(site) === siteKey(user.site);
 }
 const statusRank = { failed: 6, error: 6, delivered: 5, received: 5, sent: 3, success: 3, simulated: 2, queued: 1 };

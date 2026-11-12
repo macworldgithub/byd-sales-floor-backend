@@ -142,6 +142,7 @@ app.use('/api/clients', require('./routes/clients'));
 app.use('/api/offers', require('./routes/offers'));
 app.use('/api/templates', require('./routes/templates'));
 app.use('/api/messages', require('./routes/messages'));
+app.use('/api/notifications', require('./routes/smsReplyNotifications'));
 
 app.use('/api/stats', require('./routes/stats'));
 app.use('/api/search', require('./routes/search'));

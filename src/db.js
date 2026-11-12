@@ -90,6 +90,7 @@ async function ensureIndexes() {
     const holdColl = deliveryConn.db.collection('stockholds');
 
     await Promise.allSettled([
+      deliveryConn.db.collection('sms_reply_notifications').createIndex({ site: 1, created_at: -1, _id: -1 }),
       ...[{ updatedAt: -1, _id: -1 }, { createdAt: -1, _id: -1 }, { score: -1, _id: -1 }, { name: 1, _id: 1 }]
         .map(index => leadConn.db.collection('leads').createIndex(index)),
       oppColl.createIndex({ updatedAt: -1, _id: -1 }),

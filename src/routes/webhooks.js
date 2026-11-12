@@ -67,6 +67,14 @@ router.post('/mobilemessage/inbound', async (req, res, next) => {
     };
     if (messageId) await Message.updateOne({ _id: new (require('mongoose').Types.ObjectId)(inboundDocumentId(messageId)) }, { $setOnInsert: inboundRecord }, { upsert: true });
     else await Message.create(inboundRecord);
+    // Both inbound receivers share this deterministic event identity. Provider
+    // retries and delivery through both URLs must not reset per-user read state.
+    if (!req.body.status || ['inbound','unsubscribe'].includes(String(req.body.type || req.body.event || '').toLowerCase())) {
+      await require('../services/smsReplyNotifications').recordReply(deliveryConn.db, inboundRecord, {
+        client_id: matchedClient?.id || clientId, lead_id: leadId,
+        customer_id: matchedClient?.crm_customer_id || matchedLead?.customerId || matchedLead?.customer_id,
+      });
+    }
 
     // 3. Update or create unified Conversation in Lead Centre
     const candidates = await Conversation.find({ phone: phoneRegex(phone) }).sort({ lastMessageAt: -1 });
