@@ -456,15 +456,18 @@ const crmService = {
     // Also pull comments from Delivery Centre client if linked
     const customer = await custColl.findOne({ customer_id: customerId });
     if (customer?.phone) {
-      const client = await clientColl.findOne({ phone: { $regex: customer.phone.slice(-8) } });
+      let client = customer.delivery_client_id ? await clientColl.findOne(require('./customerDelivery').identity(customer.delivery_client_id)) : null;
+      if (!client) client = await clientColl.findOne({ crm_customer_id: customerId });
+      if (!client) client = await clientColl.findOne({ phone: { $regex: customer.phone.slice(-8) }, site_location: customer.site });
+      if (client && user) require('./customerDelivery').assertSite(user, client);
       if (client?.comments && client.comments.length > 0) {
         client.comments.forEach((c) => {
           events.push({
-            event_id: `EVT-DC-${c._id ? String(c._id) : crypto.randomUUID().slice(0, 8)}`,
+            event_id: `EVT-DC-${c.id || (c._id ? String(c._id) : crypto.randomUUID().slice(0, 8))}`,
             customer_id: customerId,
             type: 'note',
             event_type: 'note',
-            title: 'Delivery Centre Operational Note',
+            title: c.channel === 'sales_delivery' ? 'Sales ↔ Delivery message' : 'Delivery Centre Operational Note',
             content: c.body,
             body: c.body,
             author: c.author_name || 'Delivery Consultant',
@@ -475,7 +478,7 @@ const crmService = {
             occurred_at: c.created_at || new Date(),
             timestamp_aest: formatAEST(c.created_at || new Date()),
             visibility: 'internal',
-            deep_link: `https://deliverycentre.com.au/clients/${client._id}`,
+            deep_link: `https://deliverycentre.goodshowroom.com/clients/${client.id || client._id}`,
           });
         });
       }
@@ -1073,7 +1076,7 @@ const crmService = {
    * 4. Upsert Delivery Centre client (imported_from = crm) with compensation on failure
    * 5. Write TimelineEvents and emit crm.deal_sold
    */
-  async markSold(oppId, payload) {
+  async markSold(oppId, payload, actor) {
     await ensureDbConnected();
     const oppColl = deliveryConn.db.collection('opportunities');
     const custColl = deliveryConn.db.collection('customers');
@@ -1088,6 +1091,11 @@ const crmService = {
 
     const customer = await custColl.findOne({ customer_id: opp.customer_id });
     if (!customer) throw new Error('Customer not found');
+    if (actor) { require('./customerDelivery').assertSite(actor, opp); require('./customerDelivery').assertSite(actor, customer); }
+    const deliveryHandoff = require('./customerDelivery').handoffFields(payload.delivery_handoff);
+    if (opp.sales_log_id && opp.delivery_client_id) {
+      return { opportunity: await this.getOpportunityById(opp.opportunity_id), salesLogId: opp.sales_log_id, deliveryClientId: opp.delivery_client_id, vyOrderId: opp.vy_order_id, deliverySyncSuccess: true, deliverySyncPending: false };
+    }
 
     // ── Step 1: Strict Validation (§7.5) ────────────────────────────────────
     if (opp.stage === 'Delivered / Won') {
@@ -1133,12 +1141,20 @@ const crmService = {
     const vehicleDescriptor = payload.vehicle_descriptor || opp.vehicle_descriptor || `${opp.model} ${opp.variant}`;
     const primarySalesperson = payload.primary_salesperson || opp.owner_name || '';
 
+    const lockId = crypto.randomUUID();
+    const claimed = await oppColl.findOneAndUpdate(
+      { opportunity_id: opp.opportunity_id, delivery_client_id: { $in: [null, ''] }, $or: [{ sold_handoff_lock: { $exists: false } }, { sold_handoff_lock_until: { $lt: new Date() } }] },
+      { $set: { sold_handoff_lock: lockId, sold_handoff_lock_until: new Date(Date.now() + 120000) } }
+    );
+    if (!claimed || claimed.value === null) throw Object.assign(new Error('This sale is already being submitted. Refresh before retrying.'), { statusCode: 409 });
+    try {
     // ── Step 2: VY Order / Stock Confirmation (§7.5 Step 2) ──────────────────
     const vyStockId = payload.vy_stock_id || opp.vy_stock_id || (isFactoryOrder ? 'FACTORY-ORDER' : null);
     const vyOrderId = payload.vy_order_id || opp.vy_order_id || (isFactoryOrder ? 'FACTORY-ORDER' : null);
     const vySyncPending = !vyStockId && !isFactoryOrder;
-    const salesLogCount = await salesLogColl.countDocuments();
-    const salesLogId = 'SL-BYD-' + (900 + salesLogCount + 1);
+    const existingSale = await salesLogColl.findOne({ opportunity_id: opp.opportunity_id });
+    const salesLogCount = existingSale ? 0 : await salesLogColl.countDocuments();
+    const salesLogId = existingSale?.sales_log_id || opp.sales_log_id || 'SL-BYD-' + (900 + salesLogCount + 1);
 
     // ── Step 3: Upsert Sales Log Row (§7.5 Step 3, §5.7) ─────────────────────
     const now = new Date();
@@ -1171,7 +1187,7 @@ const crmService = {
       createdAt: now,
       updatedAt: now,
     };
-    await salesLogColl.insertOne(newSalesLogRow);
+    await salesLogColl.updateOne({ opportunity_id: opp.opportunity_id }, { $setOnInsert: newSalesLogRow }, { upsert: true });
 
     // ── Step 4: Upsert Delivery Centre Client with Compensation (§7.5 Step 4) ─
     let deliveryClientId = null;
@@ -1180,6 +1196,12 @@ const crmService = {
 
     try {
       const newClientDoc = {
+        id: crypto.randomUUID(),
+        created_at: now,
+        booking_type: 'estimated',
+        handoff_status: 'new',
+        delivery_handoff: { ...deliveryHandoff, submitted_at: now.toISOString(), submitted_by: actor?.name || primarySalesperson, submitted_by_id: actor?.id || null },
+        payment_method: deliveryHandoff?.payment_method || payload.finance_method || null,
         name: customer.name,
         phone: customer.phone,
         email: customer.email,
@@ -1199,6 +1221,7 @@ const crmService = {
         delivery_date: opp.delivery_date || opp.scheduled_delivery_date || null,
         comments: [
           {
+            id: crypto.randomUUID(),
             author_name: `${primarySalesperson} (Sales CRM)`,
             body: `Deal closed in CRM desk. Vehicle: ${vehicleDescriptor} | VIN: ${vin || 'Pending Factory'}`,
             created_at: now,
@@ -1208,8 +1231,17 @@ const crmService = {
         updatedAt: now,
       };
 
-      const insertedClient = await clientColl.insertOne(newClientDoc);
-      deliveryClientId = String(insertedClient.insertedId);
+      const existingClient = await clientColl.findOne({ crm_opportunity_id: opp.opportunity_id });
+      if (existingClient) {
+        deliveryClientId = existingClient.id || newClientDoc.id;
+        await clientColl.updateOne({ _id: existingClient._id }, { $set: {
+          id: deliveryClientId,
+          ...(!existingClient.delivery_handoff ? { delivery_handoff: newClientDoc.delivery_handoff, handoff_status: 'new' } : {}),
+        } });
+      } else {
+        await clientColl.insertOne(newClientDoc);
+        deliveryClientId = newClientDoc.id;
+      }
       deliverySyncSuccess = true;
     } catch (err) {
       // Compensate: flag "sold — delivery sync pending" (§7.5 Compensating Action)
@@ -1256,6 +1288,7 @@ const crmService = {
           vin: vin || opp.vin,
           owner_name: primarySalesperson,
           sold_at: now,
+          delivery_handoff: deliveryHandoff,
           delivery_sync_pending: deliverySyncPending,
           sync_status: {
             vy: 'synced',
@@ -1270,12 +1303,10 @@ const crmService = {
       }
     );
 
-    if (deliveryClientId) {
-      await custColl.updateOne(
-        { customer_id: customer.customer_id },
-        { $set: { delivery_client_id: deliveryClientId, updatedAt: now } }
-      );
-    }
+    await custColl.updateOne(
+      { customer_id: customer.customer_id },
+      { $set: { ...(deliveryClientId ? { delivery_client_id: deliveryClientId } : {}), delivery_handoff: deliveryHandoff, current_stage: 'Written / Sold', updatedAt: now } }
+    );
 
     const soldEventId = `EVT-${crypto.randomUUID()}`;
     await tlColl.insertOne({
@@ -1302,9 +1333,11 @@ const crmService = {
     // Direct Lead Centre database update (Mark Sold in Lead Centre)
     if (customer.phone || opp.lead_prospect_id) {
       try {
-        const leadQuery = opp.lead_prospect_id
-          ? { $or: [{ _id: opp.lead_prospect_id }, { phone: { $regex: customer.phone.slice(-8), $options: 'i' } }] }
-          : { phone: { $regex: customer.phone.slice(-8), $options: 'i' } };
+        const prospectId = customer.lead_prospect_id || opp.lead_prospect_id;
+        const suffix = String(customer.phone || '').replace(/\D/g, '').slice(-8);
+        const identities = prospectId ? [{ leadId: String(prospectId) }, { virtualyardId: String(prospectId) }, ...(/^[a-f\d]{24}$/i.test(String(prospectId)) ? [{ _id: new (require('mongoose').mongo.ObjectId)(String(prospectId)) }] : [])]
+          : suffix.length === 8 ? [{ phone: { $regex: suffix + '$' } }] : [{ _id: '__no_matching_lead__' }];
+        const leadQuery = { $and: [{ $or: identities }, require('./crmBrowsing').siteScope({ site: opp.site }, {}, ['dealer', 'site', 'dealership', 'dealerName'])] };
         await leadConn.db.collection('leads').updateMany(
           leadQuery,
           {
@@ -1335,6 +1368,9 @@ const crmService = {
       deliverySyncSuccess,
       deliverySyncPending,
     };
+    } finally {
+      await oppColl.updateOne({ opportunity_id: opp.opportunity_id, sold_handoff_lock: lockId }, { $unset: { sold_handoff_lock: '', sold_handoff_lock_until: '' } });
+    }
   },
 
   // ─── 4. Allocations & SLA Queue (§5.3, AC-4) ──────────────────────────────
@@ -2545,7 +2581,7 @@ const crmService = {
 
     let records = clients.map((c) => {
       const clientIdStr = String(c._id);
-      const linkedOpp = oppByClientId[clientIdStr] || oppByClientId[c.client_id] || {};
+      const linkedOpp = oppByClientId[c.id] || oppByClientId[clientIdStr] || oppByClientId[c.client_id] || {};
       const inferredSite =
         c.site_location ||
         c.site ||
@@ -2559,7 +2595,7 @@ const crmService = {
       const inferredDept = c.department || 'Delivery Centre';
 
       return {
-        client_id: c.client_id || clientIdStr,
+        client_id: c.id || c.client_id || clientIdStr,
         opportunity_id: linkedOpp.opportunity_id || c.opportunity_id || '',
         customer_name: c.name || c.customer_name || linkedOpp.customer_name || 'BYD Customer',
         phone: c.phone || linkedOpp.customer_phone || '',
@@ -3389,7 +3425,7 @@ const crmService = {
         customer_name: c.name || c.customer_name,
         vehicle: c.vehicle,
         site: c.site || c.dealer || '',
-        client_id: String(c._id),
+        client_id: c.id || String(c._id),
         timestamp: c.updatedAt || c.createdAt || null,
       });
     }

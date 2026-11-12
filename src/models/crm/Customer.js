@@ -7,6 +7,7 @@ const { deliveryConn } = require('../../db');
 
 const customerSchema = new mongoose.Schema(
   {
+    delivery_handoff: { type: mongoose.Schema.Types.Mixed, default: null },
     customer_id: { type: String, required: true, unique: true, index: true },
     name: { type: String, required: true, index: true },
     phone: { type: String, required: true, index: true },

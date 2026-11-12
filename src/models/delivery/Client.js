@@ -6,6 +6,9 @@ const mongoose = require('mongoose');
 const { deliveryConn } = require('../../db');
 
 const commentSchema = new mongoose.Schema({
+  id: { type: String },
+  channel: { type: String, default: null },
+  team: { type: String, default: null },
   author_id: { type: String, default: null },
   author_name: { type: String, required: true },
   body: { type: String, required: true },
@@ -25,7 +28,12 @@ const accessorySchema = new mongoose.Schema({
 
 const clientSchema = new mongoose.Schema(
   {
+    delivery_handoff: { type: mongoose.Schema.Types.Mixed, default: null },
+    handoff_status: { type: String, default: null },
+    delivery_unread: { type: Number, default: 0 },
+    sales_unread: { type: Number, default: 0 },
     // ── Core fields ───────────────────────────────────────────────────
+    id: { type: String },
     name: { type: String, required: true },
     phone: { type: String, required: true },
     email: { type: String, default: null },
@@ -123,7 +131,7 @@ const clientSchema = new mongoose.Schema(
     salesperson: { type: String, default: null },
     notes: { type: String, default: null },
     address: { type: String, default: null },
-    site_location: { type: String, default: null, index: true },
+    site_location: { type: String, default: null },
     location: { type: String, default: null },
 
     // ── VY / integrations ─────────────────────────────────────────────
@@ -166,7 +174,10 @@ const clientSchema = new mongoose.Schema(
 clientSchema.index({ phone: 1 });
 clientSchema.index({ email: 1 });
 clientSchema.index({ stage: 1 });
-clientSchema.index({ delivery_date: 1 });
+// Match Delivery Centre's retained compound indexes; prefixes cover date/site
+// queries without rebuilding redundant indexes on the shared Atlas cluster.
+clientSchema.index({ delivery_date: 1, created_at: -1, id: 1 });
+clientSchema.index({ site_location: 1, delivery_date: 1, created_at: -1, id: 1 });
 clientSchema.index({ vin: 1 }, { sparse: true });
 clientSchema.index({ vy_order_id: 1 }, { sparse: true });
 clientSchema.index({ crm_customer_id: 1 }, { sparse: true });

@@ -400,7 +400,7 @@ router.post('/opportunities/:id/mark-sold', async (req, res, next) => {
       ...req.body,
       primary_salesperson: req.body.primary_salesperson || req.user?.name || '',
     };
-    const result = await crmService.markSold(req.params.id, payload);
+    const result = await crmService.markSold(req.params.id, payload, req.user);
     res.status(200).json({
       success: true,
       message: result.deliverySyncSuccess

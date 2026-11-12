@@ -146,6 +146,7 @@ app.use('/api/messages', require('./routes/messages'));
 app.use('/api/stats', require('./routes/stats'));
 app.use('/api/search', require('./routes/search'));
 app.use('/api/webhooks', require('./routes/webhooks'));
+app.use('/api/customer-delivery', require('./routes/customerDelivery'));
 app.use('/api/crm', require('./routes/crm'));
 app.use('/api/virtualyard', require('./routes/virtualyard'));
 app.use('/api/sequences', require('./routes/sequences'));
