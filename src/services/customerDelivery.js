@@ -54,11 +54,22 @@ async function profile(panel, lead, reference, user, create = false) {
   if (client) assertSite(user, client);
   return { customer, prospect, client };
 }
-function view(record) {
+function messagePage(comments, before) {
+  const messages = (comments || []).filter(c => c.channel === 'sales_delivery');
+  let end = messages.length;
+  if (before !== undefined) {
+    if (typeof before !== 'string' || !before || before.length > 100) fail(400, 'Invalid conversation cursor.');
+    end = messages.findIndex(message => message.id === before);
+    if (end < 0) fail(400, 'Conversation cursor not found. Refresh the customer profile.');
+  }
+  const start = Math.max(0, end - 100);
+  return { messages: messages.slice(start, end), has_more: start > 0 };
+}
+function view(record, before) {
   const { customer, client } = record;
   return { customer_id: customer?.customer_id || null, client_id: client?.id || (client?._id ? String(client._id) : null),
     handoff: client?.delivery_handoff || customer?.delivery_handoff || null, stage: client?.stage || null,
-    messages: (client?.comments || []).filter(c => c.channel === 'sales_delivery').slice(-100),
+    ...messagePage(client?.comments, before),
     last_delivery_message_id: client?.last_delivery_message_id || null,
     unread: client?.sales_unread || 0 };
 }
@@ -73,8 +84,13 @@ async function chat(panel, record, body, user) {
 }
 async function notifications(panel, user) {
   const filter = { sales_unread: { $gt: 0 } };
-  if (user.locked_site) filter.site_location = new RegExp(`^(?:BYD\\s+)?${String(user.locked_site).replace(/^BYD\s+/i, '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
+  const { siteScope } = require('./crmBrowsing');
+  if (user.locked_site) Object.assign(filter, siteScope({}, user, ['site_location']));
+  else if (Array.isArray(user.allowed_sites) && !user.all_sites) {
+    filter.$or = user.allowed_sites.map(site => siteScope({ site }, {}, ['site_location']));
+    if (!filter.$or.length) return [];
+  }
   const rows = await panel.collection('clients').find(filter, { projection: { id: 1, name: 1, site_location: 1, crm_customer_id: 1, sales_unread: 1 } }).limit(100).toArray();
   return rows.filter(row => { try { assertSite(user, row); return true; } catch { return false; } }).map(row => ({ customer_id: row.crm_customer_id, name: row.name, unread: row.sales_unread }));
 }
-module.exports = { PAYMENT_METHODS, handoffFields, assertSite, identity, profile, view, chat, notifications };
+module.exports = { PAYMENT_METHODS, handoffFields, assertSite, identity, profile, messagePage, view, chat, notifications };

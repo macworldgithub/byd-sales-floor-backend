@@ -16,7 +16,7 @@ router.get('/delivery-notifications', async (req, res, next) => {
   try { res.json({ success: true, data: await service.notifications(deliveryConn.db, req.user) }); } catch (error) { next(error); }
 });
 router.get('/profiles/:id/delivery', async (req, res, next) => {
-  try { res.json({ success: true, data: service.view(await service.profile(deliveryConn.db, leadConn.db, req.params.id, req.user)) }); } catch (error) { next(error); }
+  try { res.json({ success: true, data: service.view(await service.profile(deliveryConn.db, leadConn.db, req.params.id, req.user), req.query.before) }); } catch (error) { next(error); }
 });
 router.post('/profiles/:id/delivery/read', async (req, res, next) => {
   try {

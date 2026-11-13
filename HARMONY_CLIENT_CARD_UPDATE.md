@@ -52,3 +52,7 @@ Mongoose's Delivery Client schema matches the retained compound date/site pagina
 Deploy the Node backend and Delivery Centre backend before the matching frontends. Sales Floor backend/frontend/CRM are under `/var/www/sales-floor` on the existing Sales Floor host; Delivery Centre remains on its existing host under `/var/www/shaun-backend` and `/var/www/shaun-frontend`.
 
 Build candidate frontends separately before switching the running release. Preserve environment files, local uploads and rollback builds. Restart only the affected PM2 applications and `byd-panel.service`. Verify public health, current static assets, handoff visibility and both chat directions after the switch. The prior database-cleanup proposal remains separate and requires its own approval.
+
+## Conversation history follow-up
+
+All three web applications expose **Load earlier messages** using a stable message-ID cursor (`before` query parameter). The default page remains 100 messages. New incoming replies do not shift older page boundaries. Sales Floor and CRM History tabs provide read-only chat history without clearing unread notifications. Notification queries match dealership aliases before limiting results, including Melbourne / Melbourne City and optional BYD / VIC labels. No existing messages are removed.

@@ -113,3 +113,30 @@ test('Sales Floor lead is linked to one durable canonical customer before handof
   assert.equal(state.customers.length, 1);
   assert.equal(state.leads[0].customerId, one.customer.customer_id);
 });
+
+test('retained chat pages have no gaps or duplicates when newer messages arrive', () => {
+  const comments = Array.from({ length: 205 }, (_, i) => ({ id: `m-${i}`, channel: 'sales_delivery', body: String(i) }));
+  comments.splice(30, 0, { id: 'operational-note', body: 'Not a chat message' });
+  const latest = delivery.messagePage(comments);
+  assert.equal(latest.messages.length, 100);
+  assert.equal(latest.has_more, true);
+  comments.push({ id: 'new-reply', channel: 'sales_delivery' });
+  const earlier = delivery.messagePage(comments, latest.messages[0].id);
+  const first = delivery.messagePage(comments, earlier.messages[0].id);
+  assert.equal(first.has_more, false);
+  assert.deepEqual([...first.messages, ...earlier.messages, ...latest.messages].map(m => m.id), Array.from({ length: 205 }, (_, i) => `m-${i}`));
+  assert.throws(() => delivery.messagePage(comments, 'unknown'), e => e.statusCode === 400);
+  assert.throws(() => delivery.messagePage(comments, []), e => e.statusCode === 400);
+});
+
+test('reply notifications scope dealership aliases before the result limit', async () => {
+  let query;
+  const panel = { collection() { return { find(filter) { query = filter; return { limit() { return { toArray: async () => [] }; } }; } }; } };
+  await delivery.notifications(panel, { ...actor, locked_site: 'BYD Melbourne City' });
+  const regex = query.$expr.$regexMatch.regex;
+  assert.ok(regex.test('Melbourne'));
+  assert.ok(regex.test('BYD Melbourne City VIC'));
+  assert.equal(regex.test('BYD Fairfield'), false);
+  await delivery.notifications(panel, { ...actor, locked_site: '', allowed_sites: ['BYD Fairfield', 'BYD Nunawading'] });
+  assert.equal(query.$or.length, 2);
+});
