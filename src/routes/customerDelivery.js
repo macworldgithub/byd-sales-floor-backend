@@ -12,6 +12,23 @@ router.use((req, res, next) => {
   next();
 });
 router.use(async (req, res, next) => { try { await ensureDbConnected(); res.set('Cache-Control', 'no-store'); next(); } catch (error) { next(error); } });
+// Sales Floor users need these features without a separate CRM platform grant.
+router.get('/inventory', async (req, res, next) => {
+  try {
+    const result = await crm.getVyStock(req.query);
+    res.json({ success: true, ...result });
+  } catch (error) { next(error); }
+});
+router.get('/post-delivery-followups', async (req, res, next) => {
+  try {
+    res.json({ success: true, data: await require('../services/postDeliveryFollowups').list(deliveryConn.db, req.user, req.query.site) });
+  } catch (error) { next(error); }
+});
+router.post('/post-delivery-followups/:id/complete', async (req, res, next) => {
+  try {
+    res.json({ success: true, data: await require('../services/postDeliveryFollowups').complete(deliveryConn.db, req.params.id, req.body, req.user) });
+  } catch (error) { next(error); }
+});
 router.get('/delivery-notifications', async (req, res, next) => {
   try { res.json({ success: true, data: await service.notifications(deliveryConn.db, req.user) }); } catch (error) { next(error); }
 });

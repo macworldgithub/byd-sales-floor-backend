@@ -9,3 +9,7 @@ Companion to the Delivery Centre `shaun-backend` / `shaun-frontend` release and 
 - Inventory search is literal, supports VIN/stock/model queries and retains server pagination. The picker also serves the inline Delivery-tab handoff.
 
 Deploy this API and the Delivery backend before their frontends. No customer SMS is issued by the reminder list/completion endpoints. Optional salesperson texts use the existing explicit manual send action.
+
+## Sales Floor parity
+
+Sales Floor-only accounts can use the same inventory search and reminder records through authenticated `/api/customer-delivery/inventory`, `GET /api/customer-delivery/post-delivery-followups` and `POST /api/customer-delivery/post-delivery-followups/:id/complete`. Site and salesperson restrictions remain enforced; a separate CRM grant is not required. Completion is shared across both applications and records the originating platform in the timeline. The existing Sold handoff endpoint accepts the authoritative inventory stock reference or explicit `vin_tba`.

@@ -33,7 +33,8 @@ async function complete(db, id, input, user) {
   if (!['open', 'completed'].includes(row.status)) fail(409, 'This follow-up is no longer active.');
   const at = new Date();
   const updates = { status: 'completed', notes, call_outcome: input.call_outcome, text_action: input.text_action,
-    completed_at: at, completed_by: user.id, completed_by_name: user.name };
+    completed_at: at, completed_by: user.id, completed_by_name: user.name,
+    completed_platform: user.platform === 'sales_floor' ? 'sales_floor' : 'crm' };
   if (row.status !== 'completed') {
     await tasks.updateOne({ id, status: 'open' }, { $set: updates });
     row = await tasks.findOne({ id });
@@ -45,7 +46,8 @@ async function complete(db, id, input, user) {
   await db.collection('timelineevents').updateOne({ event_id: eventId }, { $setOnInsert: {
     event_id: eventId, customer_id: row.customer_id, client_id: row.client_id, type: 'call', event_type: 'call',
     title: 'Day 3 post-delivery follow-up completed', content,
-    author_name: row.completed_by_name, author: row.completed_by_name, author_id: row.completed_by, source: 'Sales CRM', source_system: 'crm',
+    author_name: row.completed_by_name, author: row.completed_by_name, author_id: row.completed_by,
+    source: row.completed_platform === 'sales_floor' ? 'Sales Floor' : 'Sales CRM', source_system: row.completed_platform || 'crm',
     occurred_at: recordedAt, timestamp: recordedAt, createdAt: recordedAt, visibility: 'internal',
   } }, { upsert: true });
   if (row.client_id) await db.collection('clients').updateOne({ id: row.client_id, 'comments.id': { $ne: eventId } }, { $push: { comments: {
