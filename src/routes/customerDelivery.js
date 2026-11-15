@@ -34,7 +34,7 @@ router.post('/profiles/:id/delivery/messages', async (req, res, next) => {
 router.post('/profiles/:id/sold', async (req, res, next) => {
   try {
     const delivery_handoff = service.handoffFields(req.body.delivery_handoff);
-    if (!String(req.body.vin || '').trim() && req.body.is_factory_order !== true) return res.status(400).json({ success: false, message: 'Enter the VIN or select Factory Order.' });
+    if (!String(req.body.vin || '').trim() && req.body.is_factory_order !== true && req.body.vin_tba !== true && !req.body.vy_stock_id) return res.status(400).json({ success: false, message: 'Select an inventory vehicle or choose TBA.' });
     const record = await service.profile(deliveryConn.db, leadConn.db, req.params.id, req.user, true);
     const coll = deliveryConn.db.collection('opportunities');
     let opp = req.body.opportunity_id ? await coll.findOne({ opportunity_id: req.body.opportunity_id, customer_id: record.customer.customer_id })

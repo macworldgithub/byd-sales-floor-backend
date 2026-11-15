@@ -68,6 +68,7 @@ function messagePage(comments, before) {
 function view(record, before) {
   const { customer, client } = record;
   return { customer_id: customer?.customer_id || null, client_id: client?.id || (client?._id ? String(client._id) : null),
+    site: customer?.site || client?.site_location || record.prospect?.dealer || null,
     handoff: client?.delivery_handoff || customer?.delivery_handoff || null, stage: client?.stage || null,
     ...messagePage(client?.comments, before),
     last_delivery_message_id: client?.last_delivery_message_id || null,

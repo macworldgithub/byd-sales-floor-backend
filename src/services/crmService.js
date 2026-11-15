@@ -1116,6 +1116,9 @@ const crmService = {
       throw err;
     }
 
+    const vinTba = payload.vin_tba === true;
+    const selectedInventory = payload.vy_stock_id && !vinTba
+      ? await require('./inventorySelection').selectInventory(leadConn.db, deliveryConn.db, payload.vy_stock_id, opp) : null;
     const isFactoryOrder = Boolean(
       payload.factory_order ||
       payload.is_factory_order ||
@@ -1124,8 +1127,8 @@ const crmService = {
       opp.order_type === 'Factory Order'
     );
 
-    const vin = payload.vin || opp.vin;
-    if (!vin && !isFactoryOrder) {
+    const vin = vinTba ? 'TBA' : selectedInventory?.vin || payload.vin || opp.vin;
+    if (!vin && !isFactoryOrder && !vinTba) {
       const err = new Error('Validation failed: A valid VIN or Factory Order flag is required to Mark Sold (§7.5 Step 1, §5.4)');
       err.statusCode = 400;
       throw err;
@@ -1149,8 +1152,8 @@ const crmService = {
     if (!claimed || claimed.value === null) throw Object.assign(new Error('This sale is already being submitted. Refresh before retrying.'), { statusCode: 409 });
     try {
     // ── Step 2: VY Order / Stock Confirmation (§7.5 Step 2) ──────────────────
-    const vyStockId = payload.vy_stock_id || opp.vy_stock_id || (isFactoryOrder ? 'FACTORY-ORDER' : null);
-    const vyOrderId = payload.vy_order_id || opp.vy_order_id || (isFactoryOrder ? 'FACTORY-ORDER' : null);
+    const vyStockId = vinTba ? null : payload.vy_stock_id || opp.vy_stock_id || (isFactoryOrder ? 'FACTORY-ORDER' : null);
+    const vyOrderId = vinTba ? null : payload.vy_order_id || opp.vy_order_id || (isFactoryOrder ? 'FACTORY-ORDER' : null);
     const vySyncPending = !vyStockId && !isFactoryOrder;
     const existingSale = await salesLogColl.findOne({ opportunity_id: opp.opportunity_id });
     const salesLogCount = existingSale ? 0 : await salesLogColl.countDocuments();
@@ -1206,6 +1209,10 @@ const crmService = {
         phone: customer.phone,
         email: customer.email,
         vehicle: vehicleDescriptor,
+        vehicle_make: selectedInventory?.make || opp.make || (/^Denza\s/i.test(vehicleDescriptor) ? 'Denza' : /^BYD\s/i.test(vehicleDescriptor) ? 'BYD' : ''),
+        vehicle_model: selectedInventory?.model || opp.model || vehicleDescriptor.replace(/^BYD\s+/i, ''),
+        customer_type: /company|business/i.test(customer.record_type || '') ? 'Business' : 'Private',
+        vin_status: vinTba ? 'TBA' : 'Allocated',
         vin: vin || (isFactoryOrder ? 'Factory Order - VIN Pending' : 'VIN Pending'),
         sale_type: saleType,
         salesperson: primarySalesperson,
@@ -1286,6 +1293,7 @@ const crmService = {
           delivery_client_id: deliveryClientId,
           sale_type: saleType,
           vin: vin || opp.vin,
+          vin_status: vinTba ? 'TBA' : 'Allocated',
           owner_name: primarySalesperson,
           sold_at: now,
           delivery_handoff: deliveryHandoff,
@@ -1867,17 +1875,7 @@ const crmService = {
     const andConditions = [];
     const locVal = filter.location || filter.yard || filter.site || filter.dealership;
     if (locVal && locVal !== 'All' && locVal !== 'All Sites' && locVal !== 'All Locations' && locVal !== 'All Yards') {
-      const cleanLoc = String(locVal).replace(/^BYD\s+/i, '').trim();
-      andConditions.push({
-        $or: [
-          { location: { $regex: cleanLoc, $options: 'i' } },
-          { yard: { $regex: cleanLoc, $options: 'i' } },
-          { site: { $regex: cleanLoc, $options: 'i' } },
-          { dealer: { $regex: cleanLoc, $options: 'i' } },
-          { orderYard: { $regex: cleanLoc, $options: 'i' } },
-          { 'shirleyData.outBoundStore': { $regex: cleanLoc, $options: 'i' } },
-        ],
-      });
+      andConditions.push(require('./crmBrowsing').siteScope({ site: locVal }, {}, ['site', 'dealer', 'orderYard', 'shirleyData.outBoundStore', 'location', 'yard']));
     }
     if (filter.model && filter.model !== 'All' && filter.model !== 'All Models') {
       andConditions.push({
@@ -1911,7 +1909,7 @@ const crmService = {
     }
     const vyQStr = String(filter.q || filter.search || '').trim();
     if (vyQStr) {
-      const regex = new RegExp(vyQStr, 'i');
+      const regex = new RegExp(vyQStr.replace(/^VY-VIC-/i, '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
       andConditions.push({
         $or: [
           { stock: regex },

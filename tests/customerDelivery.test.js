@@ -114,6 +114,15 @@ test('Sales Floor lead is linked to one durable canonical customer before handof
   assert.equal(state.leads[0].customerId, one.customer.customer_id);
 });
 
+test('TBA handoff does not invent a VIN or force a factory-order allocation', async () => {
+  const { state, crm } = fixture();
+  await crm.markSold('opp-1', { vin_tba: true, sale_type: 'Retail', delivery_handoff: fields() }, actor);
+  assert.equal(state.clients[0].vin, 'TBA');
+  assert.equal(state.clients[0].vin_status, 'TBA');
+  assert.equal(state.clients[0].vy_stock_id, null);
+  assert.equal(state.opportunities[0].vin, 'TBA');
+});
+
 test('retained chat pages have no gaps or duplicates when newer messages arrive', () => {
   const comments = Array.from({ length: 205 }, (_, i) => ({ id: `m-${i}`, channel: 'sales_delivery', body: String(i) }));
   comments.splice(30, 0, { id: 'operational-note', body: 'Not a chat message' });

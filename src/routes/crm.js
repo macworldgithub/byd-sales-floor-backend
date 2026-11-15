@@ -16,6 +16,21 @@ router.use(authenticate);
 // Site-locked users (e.g. a single dealership login) can only ever see their own site's data
 router.use(enforceSiteLock);
 
+router.get('/post-delivery-followups', async (req, res, next) => {
+  try {
+    const { deliveryConn, ensureDbConnected } = require('../db');
+    await ensureDbConnected(); res.set('Cache-Control', 'no-store');
+    res.json({ success: true, data: await require('../services/postDeliveryFollowups').list(deliveryConn.db, req.user, req.query.site) });
+  } catch (error) { next(error); }
+});
+router.post('/post-delivery-followups/:id/complete', async (req, res, next) => {
+  try {
+    const { deliveryConn, ensureDbConnected } = require('../db');
+    await ensureDbConnected();
+    res.json({ success: true, data: await require('../services/postDeliveryFollowups').complete(deliveryConn.db, req.params.id, req.body, req.user) });
+  } catch (error) { next(error); }
+});
+
 router.get('/bootstrap', async (req, res, next) => {
   try {
     const { leadConn, deliveryConn, ensureDbConnected } = require('../db');
