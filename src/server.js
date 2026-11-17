@@ -54,7 +54,8 @@ app.use(cors({
   },
   credentials: true,
   methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Site']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Site', 'X-Appraisal-Token', 'Range'],
+  exposedHeaders: ['Content-Range', 'Accept-Ranges', 'Content-Length']
 }));
 app.use(express.json({ limit: '15mb' }));
 app.use(express.urlencoded({ extended: true, limit: '15mb' }));
@@ -153,6 +154,7 @@ app.use('/api/virtualyard', require('./routes/virtualyard'));
 app.use('/api/sequences', require('./routes/sequences'));
 app.use('/api/staff', require('./routes/staff'));
 app.use('/api/appraisals', require('./routes/appraisals'));
+app.use('/api/appraisal-bids', require('./routes/appraisalBids'));
 app.use('/api/vehicles', require('./routes/vehicles'));
 app.use('/api/deals', require('./routes/deals'));
 

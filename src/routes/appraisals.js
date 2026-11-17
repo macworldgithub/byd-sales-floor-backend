@@ -1,184 +1,211 @@
-/**
- * appraisals.js – I-Appraise Vehicle Inspection API Routes
- * Endpoints for vehicle walk-around inspections, PPSR check attachments,
- * condition ratings, and digital loan-car agreements.
- */
-const express = require('express');
-const Appraisal = require('../models/lead/Appraisal');
-const Lead = require('../models/lead/Lead');
-const { authenticate, enforceSiteLock } = require('../middleware/auth');
-const crmService = require('../services/crmService');
-
+const express = require("express");
+const fs = require("node:fs");
+const { authenticate } = require("../middleware/auth");
+const { leadConn, deliveryConn } = require("../db");
+const { AppraisalCentre } = require("../services/appraisalCentre");
+const policy = require("../services/appraisalPolicy");
 const router = express.Router();
+const service = () => new AppraisalCentre(leadConn.db, deliveryConn.db);
+const run = (fn) => async (req, res, next) => {
+  try {
+    res.json({ success: true, data: await fn(req, service()) });
+  } catch (error) {
+    next(error);
+  }
+};
+function sendFile(req, res, next, file) {
+  res.set({
+    "Cache-Control": "private, no-store",
+    "Content-Type": file.contentType,
+    "X-Content-Type-Options": "nosniff",
+    "Cross-Origin-Resource-Policy": "cross-origin",
+    "Content-Disposition": `${file.kind === "document" ? "attachment" : "inline"}; filename="${file.filename}"`,
+    "Accept-Ranges": "bytes",
+  });
+  if (req.headers.range) {
+    const match = /^bytes=(\d+)-(\d*)$/.exec(req.headers.range),
+      start = match ? Number(match[1]) : -1,
+      end = match?.[2] ? Number(match[2]) : file.bytes - 1;
+    if (start < 0 || start > end || end >= file.bytes)
+      return res
+        .status(416)
+        .set("Content-Range", `bytes */${file.bytes}`)
+        .end();
+    res
+      .status(206)
+      .set({
+        "Content-Range": `bytes ${start}-${end}/${file.bytes}`,
+        "Content-Length": String(end - start + 1),
+      });
+    const stream = fs.createReadStream(file.path, { start, end });
+    stream.on("error", next);
+    return stream.pipe(res);
+  }
+  res.sendFile(file.path, (error) => {
+    if (error) next(error);
+  });
+}
 router.use(authenticate);
-router.use(enforceSiteLock);
-
-// ─── GET /api/appraisals ────────────────────────────────────────────────────
-router.get('/', async (req, res, next) => {
+router.use((req, res, next) => {
   try {
-    const { leadId, customerId, rego, status, site, limit = 50, page = 1 } = req.query;
-    const filter = {};
-
-    if (leadId) filter.leadId = leadId;
-    if (customerId) filter.customerId = customerId;
-    if (rego) filter.rego = rego.trim().toUpperCase();
-    if (status) filter.status = status;
-    if (site || req.user?.locked_site) filter.site = req.user?.locked_site || site;
-
-    const skip = (Number(page) - 1) * Number(limit);
-    const [appraisals, total] = await Promise.all([
-      Appraisal.find(filter).sort('-createdAt').skip(skip).limit(Number(limit)).lean(),
-      Appraisal.countDocuments(filter),
-    ]);
-
-    return res.json({
-      success: true,
-      data: appraisals,
-      pagination: {
-        total,
-        page: Number(page),
-        limit: Number(limit),
-        pages: Math.ceil(total / Number(limit)),
-      },
-    });
-  } catch (err) {
-    next(err);
+    policy.access(req.user);
+    res.set("Cache-Control", "no-store");
+    next();
+  } catch (error) {
+    next(error);
   }
 });
-
-// ─── GET /api/appraisals/:id ────────────────────────────────────────────────
-router.get('/:id', async (req, res, next) => {
+router.get(
+  "/metadata",
+  run(async () => ({
+    shots: policy.SHOTS,
+    requiredShots: policy.REQUIRED_SHOTS,
+    statuses: policy.STATUSES,
+    states: policy.STATES,
+    providers: require("../services/vehicleChecks").readiness(),
+    damageAI: {
+      configured: !!(
+        process.env.INSPECTION_AI_URL && process.env.INSPECTION_AI_TOKEN
+      ),
+    },
+  })),
+);
+router.get(
+  "/report",
+  run((req, s) => s.report(req.query, req.user)),
+);
+router.get("/archive/:id/media/:mediaId", async (req, res, next) => {
   try {
-    const appraisal = await Appraisal.findOne({
-      $or: [{ appraisalId: req.params.id }, { _id: req.params.id.match(/^[0-9a-fA-F]{24}$/) ? req.params.id : null }],
-    }).lean();
-
-    if (!appraisal) {
-      return res.status(404).json({ success: false, message: 'Appraisal record not found' });
-    }
-
-    return res.json({ success: true, data: appraisal });
-  } catch (err) {
-    next(err);
-  }
-});
-
-// ─── POST /api/appraisals ───────────────────────────────────────────────────
-router.post('/', async (req, res, next) => {
-  try {
-    const body = req.body;
-    const appraisalId = body.appraisalId || `APP-${Date.now().toString(36).toUpperCase()}-${Math.floor(100 + Math.random() * 900)}`;
-
-    const newAppraisal = new Appraisal({
-      ...body,
-      appraisalId,
-      site: req.user?.locked_site || body.site || 'Nunawading',
-      consultantName: req.user?.name || body.consultantName || 'Sales Consultant',
-      consultantId: req.user?._id || body.consultantId,
-    });
-
-    await newAppraisal.save();
-
-    // If associated with a Lead, update the Lead with appraisal details
-    if (body.leadId) {
-      await Lead.findOneAndUpdate(
-        { $or: [{ _id: body.leadId.match(/^[0-9a-fA-F]{24}$/) ? body.leadId : null }, { virtualyardId: body.leadId }] },
-        {
-          $set: {
-            'tradeIn.hasTradeIn': true,
-            'tradeIn.rego': newAppraisal.rego,
-            'tradeIn.vin': newAppraisal.vin,
-            'tradeIn.makeModel': `${newAppraisal.year} ${newAppraisal.make} ${newAppraisal.model}`,
-            'tradeIn.valuation': newAppraisal.valuation?.tradeInAllowance || 0,
-            'tradeIn.status': 'Valued',
-          },
-        }
-      ).catch(() => null);
-    }
-
-    // Add event to customer CRM timeline if customerId or leadId is linked
-    const customerTargetId = body.customerId || body.leadId;
-    if (customerTargetId) {
-      try {
-        await crmService.logEvent({
-          customer_id: customerTargetId,
-          type: 'Appraisal Created',
-          headline: `I-Appraise Completed: ${newAppraisal.year} ${newAppraisal.make} ${newAppraisal.model} (${newAppraisal.rego})`,
-          body: `Trade allowance: $${newAppraisal.valuation?.tradeInAllowance?.toLocaleString() || 0}. PPSR status: ${newAppraisal.ppsrStatus}. Condition exterior: ${newAppraisal.condition?.exteriorRating}/5.`,
-          user_id: req.user?._id || 'system',
-          author_name: req.user?.name || 'Sales Consultant',
-          site: newAppraisal.site,
-        });
-      } catch (timelineErr) {
-        // Log timeline non-fatal
-      }
-    }
-
-    return res.status(201).json({
-      success: true,
-      message: 'Vehicle appraisal saved successfully.',
-      data: newAppraisal,
-    });
-  } catch (err) {
-    next(err);
-  }
-});
-
-// ─── PATCH /api/appraisals/:id ──────────────────────────────────────────────
-router.patch('/:id', async (req, res, next) => {
-  try {
-    const updated = await Appraisal.findOneAndUpdate(
-      { $or: [{ appraisalId: req.params.id }, { _id: req.params.id.match(/^[0-9a-fA-F]{24}$/) ? req.params.id : null }] },
-      { $set: req.body },
-      { new: true }
+    sendFile(
+      req,
+      res,
+      next,
+      await service().archiveAttachment(
+        req.params.id,
+        req.params.mediaId,
+        req.user,
+      ),
     );
-
-    if (!updated) {
-      return res.status(404).json({ success: false, message: 'Appraisal not found' });
-    }
-
-    return res.json({ success: true, message: 'Appraisal updated', data: updated });
-  } catch (err) {
-    next(err);
+  } catch (error) {
+    next(error);
   }
 });
-
-// ─── POST /api/appraisals/:id/sign-loancar ──────────────────────────────────
-router.post('/:id/sign-loancar', async (req, res, next) => {
+for (const kind of ["archive", "partners", "list"])
+  router.get(kind === "list" ? "/" : `/${kind}`, async (req, res, next) => {
+    try {
+      res.json({
+        success: true,
+        ...(await service()[kind](req.query, req.user)),
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+router.post(
+  "/partners",
+  run((req, s) => s.savePartner(req.body, req.user)),
+);
+router.patch(
+  "/partners/:id",
+  run((req, s) => s.savePartner(req.body, req.user, req.params.id)),
+);
+router.get("/media/:id", async (req, res, next) => {
   try {
-    const { signatureName, loanCarRego, loanCarModel, notes } = req.body;
-    if (!signatureName) {
-      return res.status(400).json({ success: false, message: 'Digital signature name is required.' });
-    }
-
-    const updated = await Appraisal.findOneAndUpdate(
-      { $or: [{ appraisalId: req.params.id }, { _id: req.params.id.match(/^[0-9a-fA-F]{24}$/) ? req.params.id : null }] },
-      {
-        $set: {
-          'loanCar.isRequired': true,
-          'loanCar.isSigned': true,
-          'loanCar.signedBy': signatureName,
-          'loanCar.signedAt': new Date(),
-          'loanCar.loanCarRego': loanCarRego || 'LOAN-BYD1',
-          'loanCar.loanCarModel': loanCarModel || 'BYD Atto 3 Extended',
-          'loanCar.notes': notes || 'Loan car agreement digitally executed on sales floor.',
-        },
-      },
-      { new: true }
+    sendFile(
+      req,
+      res,
+      next,
+      await service().attachment(req.params.id, req.user),
     );
-
-    if (!updated) {
-      return res.status(404).json({ success: false, message: 'Appraisal not found' });
-    }
-
-    return res.json({
-      success: true,
-      message: `Loan car agreement signed for ${updated.loanCar.loanCarModel} (${updated.loanCar.loanCarRego}) by ${signatureName}`,
-      data: updated,
-    });
-  } catch (err) {
-    next(err);
+  } catch (error) {
+    next(error);
   }
 });
-
+router.post(
+  "/",
+  run((req, s) => s.create(req.body, req.user)),
+);
+router.get(
+  "/:id",
+  run(async (req, s) =>
+    policy.view(await s.record(req.params.id, req.user), req.user),
+  ),
+);
+router.patch(
+  "/:id",
+  run((req, s) => s.patch(req.params.id, req.body, req.user)),
+);
+router.post(
+  "/:id/status",
+  run((req, s) => s.status(req.params.id, req.body, req.user)),
+);
+router.post(
+  "/:id/link",
+  run((req, s) => s.link(req.params.id, req.body, req.user)),
+);
+router.post(
+  "/:id/rego",
+  run((req, s) => s.check(req.params.id, "rego", req.body, req.user)),
+);
+router.post(
+  "/:id/ppsr",
+  run((req, s) => s.check(req.params.id, "ppsr", req.body, req.user)),
+);
+router.post(
+  "/:id/drives/start",
+  run((req, s) => s.drive(req.params.id, req.body, req.user)),
+);
+router.post(
+  "/:id/drives/finish",
+  run((req, s) => s.drive(req.params.id, req.body, req.user, true)),
+);
+router.post(
+  "/:id/sign-loancar",
+  run((req, s) => s.signLoan(req.params.id, req.body, req.user)),
+);
+router.post(
+  "/:id/return-loancar",
+  run((req, s) => s.returnLoan(req.params.id, req.body, req.user)),
+);
+router.post(
+  "/:id/media",
+  express.raw({ type: () => true, limit: "65mb" }),
+  run((req, s) =>
+    s.upload(
+      req.params.id,
+      req.query,
+      req.body,
+      String(req.headers["content-type"] || "").split(";")[0],
+      req.user,
+    ),
+  ),
+);
+router.post(
+  "/:id/analyse",
+  run((req, s) =>
+    require("../services/appraisalAI").analyse(
+      s,
+      req.params.id,
+      req.body,
+      req.user,
+    ),
+  ),
+);
+router.get(
+  "/:id/offers",
+  run((req, s) => s.offers(req.params.id, req.user)),
+);
+router.post(
+  "/:id/invitations",
+  run((req, s) => s.invite(req.params.id, req.body, req.user)),
+);
+router.post(
+  "/:id/select-offer",
+  run((req, s) => s.selectOffer(req.params.id, req.body, req.user)),
+);
+router.post(
+  "/:id/invitations/:invitationId/revoke",
+  run((req, s) => s.revoke(req.params.id, req.params.invitationId, req.user)),
+);
 module.exports = router;
+module.exports.sendFile = sendFile;

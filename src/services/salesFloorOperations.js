@@ -95,9 +95,11 @@ class SalesFloorOperations extends SalesFloorMobile {
     const existing = await this.lead.collection('deals').findOne({ dealId });
     if (existing) return this.record('deals', existing._id, user);
     const lead = await this.record('leads', input.leadId, user), vehicle = await this.record('inventories', input.inventoryId, user);
+    const appraisalLink = await require('./appraisalLinks').forDeal(this, lead, input, user);
     if (p.stockStatus(vehicle.status) !== 'In Stock') fail(409, 'This vehicle is unavailable or already has a pending deal.');
     const price = Number(input.salePrice), allowance = Number(input.tradeInValue || 0);
     if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(allowance) || allowance < 0 || allowance > price) fail(400, 'Enter valid sale and trade-in amounts.');
+    const originalStockStatus = vehicle.status;
     const claim = await this.lead.collection('inventories').updateOne({ _id: vehicle._id, status: vehicle.status, $or: [{ dealId: { $exists: false } }, { dealId: null }] }, { $set: { status: 'Deal Pending', dealId, updatedAt: new Date() } });
     if (!claim.modifiedCount) fail(409, 'Another deal has already reserved this vehicle.');
     const record = { _id: new ObjectId(), dealId, leadId: id(lead), customerId: lead.customerId, site: lead.dealer, buyerName: lead.name, buyerPhone: lead.phone, buyerEmail: lead.email,
@@ -105,10 +107,22 @@ class SalesFloorOperations extends SalesFloorMobile {
       inventoryId: id(vehicle), vehicle: { stockNumber: vehicle.stock || vehicle.identifier, model: vehicle.specifications?.model || vehicle.model,
         variant: vehicle.specifications?.badge, vin: vehicle.registration?.vin, year: vehicle.specifications?.year, driveAwayPrice: price },
       tradeIn: { ...lead.tradeIn, rego: lead.tradeInRego, vin: lead.tradeInVin, ppsrStatus: lead.ppsrStatus || 'Pending', allowance, ppsrCertificate: lead.ppsrCertificate },
+      ...(appraisalLink ? { appraisalId: appraisalLink.appraisalId } : {}),
       financials: { vehiclePrice: price, netSettlement: price - allowance, tradeInAllowance: allowance, paymentMethod: input.financeType || 'Cash' },
       status: 'Registered', virtualYard: { status: 'Pending Sync' }, createdAt: new Date(), updatedAt: new Date() };
-    try { await this.lead.collection('deals').insertOne(record); }
-    catch (error) { await this.lead.collection('inventories').updateOne({ _id: vehicle._id, dealId }, { $set: { status: vehicle.status }, $unset: { dealId: '' } }); throw error; }
+    let appraisalClaimed = false;
+    try {
+      if (appraisalLink) {
+        const claimed = await this.lead.collection('appraisals').updateOne({ _id: appraisalLink._id, $or: [{ dealId: null }, { dealId: { $exists: false } }] }, { $set: { dealId: String(record._id), updatedAt: new Date() }, $inc: { revision: 1 } });
+        if (!claimed.modifiedCount) fail(409, 'Another deal has already linked this appraisal.');
+        appraisalClaimed = true;
+      }
+      await this.lead.collection('deals').insertOne(record);
+    } catch (error) {
+      await this.lead.collection('inventories').updateOne({ _id: vehicle._id, dealId }, { $set: { status: originalStockStatus }, $unset: { dealId: '' } });
+      if (appraisalClaimed) await this.lead.collection('appraisals').updateOne({ _id: appraisalLink._id, dealId: String(record._id) }, { $unset: { dealId: '' }, $inc: { revision: 1 } });
+      throw error;
+    }
     await this.lead.collection('leads').updateOne({ _id: lead._id }, { $set: { stage: 'COMMITTED', status: 'committed', dealId, updatedAt: new Date() } });
     await this.event(lead, user, 'Deal registered', `Deal ${dealId} registered. Awaiting Virtual Yard sync and signed contract.`, { dealId });
     return record;
@@ -164,8 +178,9 @@ class SalesFloorOperations extends SalesFloorMobile {
     const client = { name: deal.buyerName, phone: deal.buyerPhone, email: deal.buyerEmail, vehicle: deal.vehicle.model, vin: deal.vehicle.vin,
       site_location: deal.site, site: deal.site, salesperson: deal.consultantName, consultantId: deal.consultantId, owner_user_id: deal.consultantId,
       vy_order_id: String(input.externalOrderId), contractId: String(input.contractId), contractSignedAt: new Date(input.signedAt),
-      crm_customer_id: deal.customerId, dealId: deal.dealId, stage: 'Scheduled', status: 'Scheduled', accessories: [], pdiComplete: false, createdAt: new Date() };
+      crm_customer_id: deal.customerId, dealId: deal.dealId, ...(deal.appraisalId ? { appraisalIds: [deal.appraisalId] } : {}), stage: 'Scheduled', status: 'Scheduled', accessories: [], pdiComplete: false, createdAt: new Date() };
     await this.panel.collection('clients').updateOne({ _id: clientId }, { $setOnInsert: client }, { upsert: true });
+    if (deal.appraisalId) await this.lead.collection('appraisals').updateOne({ appraisalId: deal.appraisalId, dealId: String(deal._id) }, { $set: { deliveryId: String(clientId), contractId: String(input.contractId), contractSignedAt: new Date(input.signedAt), updatedAt: new Date() }, $inc: { revision: 1 } });
     await this.lead.collection('deals').updateOne({ _id: deal._id }, { $set: { contractSignedAt: new Date(input.signedAt), contractId: input.contractId,
       'virtualYard.status': 'Contract Signed', delivery: { deliveryClientId: String(clientId), status: 'Scheduled' } } });
     if (deal.customerId) await this.panel.collection('customers').updateOne({ customer_id: deal.customerId }, { $set: { delivery_client_id: String(clientId), current_stage: 'In Delivery' } });

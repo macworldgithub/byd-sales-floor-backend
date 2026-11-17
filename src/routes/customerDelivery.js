@@ -69,6 +69,7 @@ router.post('/profiles/:id/sold', async (req, res, next) => {
     }
     service.assertSite(req.user, opp);
     const data = await crm.markSold(opp.opportunity_id, { ...req.body, primary_salesperson: req.user.name, delivery_handoff }, req.user);
+    data.appraisalIds = await require('../services/appraisalLinks').attachHandoff(leadConn.db, deliveryConn.db, record.customer, opp, data.deliveryClientId, req.user);
     res.json({ success: true, data });
   } catch (error) { next(error); }
 });
