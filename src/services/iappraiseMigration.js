@@ -147,6 +147,7 @@ async function prepare(filename, contactsFile, siteMap = {}) {
   };
 }
 async function apply(bundle, panel, directory) {
+  panel = require('./appraisalStorage').storage(panel);
   await fs.mkdir(directory, { recursive: true, mode: 0o700 });
   const sourcePath = path.join(directory, `${bundle.sourceHash}.json`);
   try {

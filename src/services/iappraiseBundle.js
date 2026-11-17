@@ -149,6 +149,7 @@ async function prepare(filename) {
   };
 }
 async function apply(bundle, panel, directory) {
+  panel = require('./appraisalStorage').storage(panel);
   await fs.mkdir(directory, { recursive: true, mode: 0o700 });
   async function retain(file) {
     const target = path.join(directory, file.sha256);

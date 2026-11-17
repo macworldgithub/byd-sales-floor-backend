@@ -17,12 +17,13 @@ New deals created by the existing mobile operations service inherit the customer
 Set these on the production backend, outside release directories:
 
 ```dotenv
+APPRAISAL_STATE_COLLECTION=idempotency_keys
 APPRAISAL_MEDIA_DIR=/var/www/sales-floor/shared/appraisal-media
 IAPPRAISE_ARCHIVE_DIR=/var/www/sales-floor/shared/iappraise-archive
 APPRAISAL_WEB_URL=https://sales-floor.goodshowroom.com
 ```
 
-Keep directories private and include them in server backups together with both MongoDB databases. The Nginx backend upload limit must allow 65 MB requests (70 MB provides headroom). New media are checked by file signature, retained on disk with SHA-256 metadata and served through authenticated, scoped endpoints. PDFs download as attachments; image/video playback supports byte ranges. No public static media directory is created.
+The production Atlas cluster is already at its 500-collection limit. `APPRAISAL_STATE_COLLECTION` therefore uses the existing internal `idempotency_keys` collection for the new logical media, partner, invitation, archive and vehicle-check stores. Every read/update/count includes its immutable `appraisal_namespace`; existing integration checkpoint rows are untouched. The index initializer refuses shared collections with TTL/expiry indexes. Do not add an unscoped TTL index or bulk-prune this shared collection. Keep directories private and include them in server backups together with both MongoDB databases. The Nginx backend upload limit must allow 65 MB requests (70 MB provides headroom). New media are checked by file signature, retained on disk with SHA-256 metadata and served through authenticated, scoped endpoints. PDFs download as attachments; image/video playback supports byte ranges. No public static media directory is created.
 
 Managers maintain site-specific dealer/wholesaler contacts and create recipient-specific valuation links with deadlines up to 30 days. Links are shown at creation for staff to share with their intended recipients. The backend stores only token hashes. The portal submits its token in `X-Appraisal-Token`; the share URL carries the secret in its fragment so it does not enter access-log request URLs. Shared payloads contain vehicle identity, inspection ratings/notes, damage descriptions and inspection media. Customer identities, contact details, internal valuations, repair costs, licences, signatures and private contract documents are excluded. Expired/revoked links cannot retrieve data. Offers have revision checks and retained bid history; selecting an offer freezes that offer against concurrent changes. Creating links does not send SMS/email.
 
@@ -63,6 +64,6 @@ All files/counts are validated before writes. Escaping paths, external symlinks,
 
 ## Verification and remaining acceptance
 
-Backend tests cover access boundaries, canonical customer resolution, idempotent creation, stale revisions, valuation roles, guided completion, private media bytes/ranges, drive/loan records, wholesaler-token privacy, bid revisions and source-file reconciliation. **209 backend tests**, the production web build and **8 existing web tests** passed before deployment. The tests substitute providers/databases; they do not establish live Rego/PPSR/AI acceptance or actual-device camera/signature acceptance. This release changes the web app/backend, not native iOS/Android binaries.
+Backend tests cover access boundaries, canonical customer resolution, idempotent creation, stale revisions, valuation roles, guided completion, private media bytes/ranges, drive/loan records, wholesaler-token privacy, bid revisions and source-file reconciliation. **211 backend tests**, the production web build and **8 existing web tests** passed before deployment. The tests substitute providers/databases; they do not establish live Rego/PPSR/AI acceptance or actual-device camera/signature acceptance. This release changes the web app/backend, not native iOS/Android binaries.
 
 Full iAppraise replacement remains conditional on the current account's complete data/media/directory migration, provider-specific parity, manager acceptance and live integration/device tests. The broader combined scope also contains CRM, stock, PULSE, SMS, external systems and delivery rollout requirements; this appraisal release does not certify every item in that entire document.

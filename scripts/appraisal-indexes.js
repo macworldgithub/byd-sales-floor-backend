@@ -22,9 +22,16 @@ async function main() {
   })) {
     const client = await MongoClient.connect(process.env[key]);
     try {
+      const shared = key === 'DELIVERY_CENTER_MONGO_URI' && process.env.APPRAISAL_STATE_COLLECTION;
+      if(shared) {
+        const names=await client.db().listCollections({name:shared},{nameOnly:true}).toArray();
+        if(!names.length) throw new Error('Shared appraisal storage must use an existing internal collection.');
+        if((await client.db().collection(shared).indexes()).some(index=>index.expireAfterSeconds !== undefined)) throw new Error('Shared appraisal storage must not have expiry indexes.');
+      }
+      const database = key === 'DELIVERY_CENTER_MONGO_URI' ? require('../src/services/appraisalStorage').storage(client.db()) : client.db();
       for (const [collection, indexes] of Object.entries(definitions))
         for (const [index, options] of indexes) {
-          const target = client.db().collection(collection);
+          const target = database.collection(collection);
           const current = await target.indexes().catch(error => { if (error.code === 26) return []; throw error; });
           const existing = current.find(entry => JSON.stringify(entry.key) === JSON.stringify(index));
           if (existing) {
@@ -32,10 +39,7 @@ async function main() {
             console.log(`Retained ${collection}: ${existing.name}`);
             continue;
           }
-          await client
-            .db()
-            .collection(collection)
-            .createIndex(index, options || {});
+          await target.createIndex(index, options || {});
           console.log(`Verified ${collection}: ${JSON.stringify(index)}`);
         }
     } finally {

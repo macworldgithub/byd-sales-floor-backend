@@ -63,7 +63,7 @@ router.get("/:id/media/:mediaId", async (req, res, next) => {
       )
     )
       fail(404, "Inspection media not found.");
-    const file = await deliveryConn.db
+    const file = await s.panel
       .collection("appraisal_media")
       .findOne({
         _id: ref(req.params.mediaId),

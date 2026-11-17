@@ -23,8 +23,8 @@ const ref = (value) =>
 class AppraisalCentre {
   constructor(lead, panel) {
     this.lead = lead;
-    this.panel = panel;
-    this.floor = new SalesFloorOperations(lead, panel);
+    this.panel = require('./appraisalStorage').storage(panel);
+    this.floor = new SalesFloorOperations(lead, this.panel);
   }
   scope(user, query = {}) {
     policy.access(user);
