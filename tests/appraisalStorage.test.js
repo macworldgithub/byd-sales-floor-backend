@@ -10,6 +10,8 @@ test('shared storage isolates logical appraisals from each other and existing in
   await s.collection('iappraise_archive').updateOne({_id:'archive'},{$setOnInsert:{sourceId:'source-1',site:'BYD Fairfield'}},{upsert:true});
   assert.equal(await s.collection('appraisal_partners').countDocuments({}),1);assert.equal(await s.collection('iappraise_archive').countDocuments({}),1);
   assert.equal(await s.collection('appraisal_invitations').countDocuments({}),0);assert.equal(await s.collection('iappraise_archive').findOne({_id:'legacy'}),null);
+  assert.deepEqual(await s.collection('iappraise_archive').distinct('sourceId',{}),['source-1']);
+  assert.deepEqual(await s.collection('appraisal_partners').distinct('sourceId',{}),[]);
   assert.equal((await s.collection('appraisal_partners').findOne({_id:'partner'}))[MARKER],undefined);
   assert.equal((await s.collection('appraisal_partners').find({}).sort({name:1}).limit(1).toArray())[0].name,'Partner');
   await s.collection('appraisal_partners').updateOne({_id:'legacy'},{$set:{name:'overwrite'}});assert.equal(db.collection('idempotency_keys').rows[0].name,undefined);assert.deepEqual(db.collection('idempotency_keys').rows[0].response,{kept:true});

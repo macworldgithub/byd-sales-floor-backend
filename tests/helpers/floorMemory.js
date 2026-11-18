@@ -51,6 +51,7 @@ function database(initial = {}) {
         const cursor = { sort() { return cursor; }, skip(value) { result = result.slice(value); return cursor; }, limit(value) { result = result.slice(0, value); return cursor; }, async toArray() { return result; } }; return cursor;
       },
       async countDocuments(query) { return rows.filter(row => matches(row, query)).length; },
+      async distinct(key, query = {}) { return [...new Set(rows.filter(row => matches(row, query)).map(row => get(row, key)).filter(value => value !== undefined))]; },
       async insertOne(row) { if (row._id && rows.some(old => same(old._id, row._id))) throw Object.assign(Error('Duplicate'), { code: 11000 }); row._id ||= new ObjectId(); rows.push({ ...row }); return { insertedId: row._id }; },
       async updateOne(query, update, options = {}) {
         let row = rows.find(row => matches(row, query)), created = false;

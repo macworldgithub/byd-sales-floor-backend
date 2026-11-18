@@ -15,6 +15,7 @@ async function main() {
       appraisal_media: [[{ appraisalId: 1 }]],
       iappraise_archive: [
         [{ site: 1, sourceRow: 1 }],
+        [{ site: 1, importedAt: -1, sourceRow: 1, _id: 1 }],
         [{ sourceHash: 1, kind: 1 }],
         [{ rego: 1 }],
       ],

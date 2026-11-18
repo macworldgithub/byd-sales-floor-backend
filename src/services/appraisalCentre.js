@@ -1102,6 +1102,15 @@ class AppraisalCentre {
     const scope = this.scope(user, query);
     const groupAccess = user.all_sites && !user.locked_site && /^all(?:\s|$)/i.test(query.site || user.site || '');
     const conditions = [groupAccess ? { $or: [scope, { kind: 'dealer_staff', sourceAccount: 'BYD Melbourne', site: 'BYD Melbourne (source group)' }] } : scope];
+    const batchScope = { $and: [...conditions] };
+    if (query.sourceHash) {
+      if (!/^[a-f0-9]{64}$/.test(query.sourceHash)) fail(400, 'Invalid archive batch.');
+      conditions.push({ sourceHash: query.sourceHash });
+    }
+    if (query.kind) {
+      if (!['appraisal', 'dealer', 'dealer_staff', 'wholesaler'].includes(query.kind)) fail(400, 'Invalid archive record type.');
+      conditions.push({ kind: query.kind });
+    }
     if (query.q)
       conditions.push({
         $or: ["rego", "vin", "customerName", "make", "model", "sourceId"].map(
@@ -1113,18 +1122,30 @@ class AppraisalCentre {
     const filter = { $and: conditions },
       page = Math.max(1, Math.floor(Number(query.page) || 1)),
       limit = 25;
-    const [data, total] = await Promise.all([
+    const collection = this.panel.collection('iappraise_archive');
+    const [data, total, hashes] = await Promise.all([
       this.panel
         .collection("iappraise_archive")
         .find(filter)
-        .sort({ sourceRow: 1 })
+        .sort(query.sourceHash ? { sourceRow: 1, _id: 1 } : { importedAt: -1, sourceRow: 1, _id: 1 })
         .skip((page - 1) * limit)
         .limit(limit)
         .toArray(),
       this.panel.collection("iappraise_archive").countDocuments(filter),
+      collection.distinct('sourceHash', batchScope),
     ]);
+    const batches = await Promise.all(hashes.filter(value => /^[a-f0-9]{64}$/.test(value)).map(async sourceHash => {
+      const filter = { $and: [batchScope, { sourceHash }] };
+      const [row, count] = await Promise.all([
+        collection.findOne(filter, { projection: { sourceHash: 1, originalCsvHash: 1, importedAt: 1, kind: 1, namespace: 1 } }),
+        collection.countDocuments(filter),
+      ]);
+      return { sourceHash, importedAt: row.importedAt, count, type: row.originalCsvHash ? 'CSV snapshot' : row.kind === 'dealer_staff' ? 'Staff contacts' : 'Detailed source records' };
+    }));
+    batches.sort((a,b) => Number(new Date(b.importedAt)) - Number(new Date(a.importedAt)));
     return {
       data,
+      meta: { batches },
       pagination: {
         page,
         limit,

@@ -17,6 +17,24 @@ const user = {
   allowed_sites: ["BYD Fairfield"],
 };
 const manager = { ...user, id: "manager-1", role: "sales_manager" };
+test('archive batches and filters preserve site isolation and distinguish source versions', async () => {
+  const {service,panel}=fixture(), archive=panel.collection('iappraise_archive');
+  const first='a'.repeat(64), second='b'.repeat(64), other='c'.repeat(64);
+  for(const row of [
+    {_id:'one',site:manager.site,sourceHash:first,kind:'appraisal',originalCsvHash:'d'.repeat(64),raw:{private:'source'}},
+    {_id:'two',site:manager.site,sourceHash:second,kind:'appraisal'},
+    {_id:'three',site:manager.site,sourceHash:second,kind:'dealer_staff'},
+    {_id:'other',site:'BYD Nunawading',sourceHash:other,kind:'appraisal'},
+  ]) await archive.insertOne({...row,importedAt:new Date()});
+  const result=await service.archive({sourceHash:second,kind:'appraisal'},manager);
+  assert.equal(result.pagination.total,1);assert.equal(result.data[0]._id,'two');
+  assert.equal(result.meta.batches.length,2);assert.deepEqual(result.meta.batches.map(x=>x.count).sort(),[1,2]);
+  assert.equal(result.meta.batches.find(x=>x.sourceHash===first).type,'CSV snapshot');
+  assert.equal(JSON.stringify(result.meta.batches).includes('private'),false);
+  assert.equal((await service.archive({sourceHash:other},manager)).pagination.total,0);
+  await assert.rejects(service.archive({sourceHash:'invalid'},manager),/Invalid archive batch/);
+  await assert.rejects(service.archive({kind:'unknown'},manager),/Invalid archive record type/);
+});
 test('source-group staff archives require all-site management and never appear in a single-site silo', async () => {
   const {service,panel}=fixture();
   await panel.collection('iappraise_archive').insertOne({_id:'source-staff',kind:'dealer_staff',sourceAccount:'BYD Melbourne',site:'BYD Melbourne (source group)',customerName:'Source staff'});

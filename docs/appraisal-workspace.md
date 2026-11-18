@@ -39,6 +39,16 @@ Do not confuse a CSV snapshot with a complete iAppraise backup. A previous inves
 
 After the initial browser approval usage limit reset, the current account's official CSV was downloaded: **1,605 rows**, matching its displayed total. Verified site partitions are Nunawading 524, Caroline Springs 946, Wodonga 32, Melbourne City 99 and Fairfield 4. Six source VINs are blank and remain blank. The Permissions page contains **86 staff contacts**, including source role and PPSR permissions; these are not a verified external wholesaler directory. Group-only contacts are preserved under a separate source-group scope and shown only to all-site management. The complete inspection/media and external wholesaler exports remain outstanding; a CSV snapshot is not full-source reconciliation. Keep the source account available until every record, attachment and partner count is reconciled and the cutover delta is imported.
 
+### Production preservation evidence — 17 November 2026 (Los Angeles)
+
+The web/backend release is running on `sales-floor.goodshowroom.com` and `sales-floor-backend.goodshowroom.com`. Both MongoDB connections and authenticated appraisal/archive/report endpoints passed live checks. The production services are `byd-sales-floor` and `byd-backend`; unrelated CRM/leads services were not restarted. Prior web build/env/Nginx configuration backups are retained under `/var/www/sales-floor/.releases/`. A private EJSON backup preserved the two existing integration checkpoint rows before archive imports.
+
+The initial **1,605-row snapshot plus 86 staff contacts** reconciled in production. A later source refresh displayed **1,618 total items** and its new official CSV reconciled independently: Caroline Springs 953, Nunawading 529, Wodonga 33, Melbourne City 99, Fairfield 4. The latest original CSV SHA-256 is `167d823eb03e003dd4898a1bd6cea499d15117e20bb764f2768d5642abfd43cf`; the import JSON source hash is `d1749266359a794def4ff46f50eb64fc3d2b38fe449be3a7dba5cd1ee6ead0ff`. Both original CSVs and reconciliation manifests are retained privately in `shared/iappraise-archive`.
+
+Source appraisal **2580601** was additionally captured from its rendered detail page, preserving its inspection tables, comments, visible offers and **29 retrieved images** in a checksum-verified bundle. Of these, 27 are the source's x1080 cached renditions and two are other images exposed in the source record. These are not a claim of complete original-resolution media or all offer/audit revisions. No historical videos or external directory records have yet been retrieved.
+
+The archive therefore contains **3,310 rows/versions**: 1,605 earlier CSV rows, 1,618 refreshed CSV rows, 86 staff rows and one detailed capture. This is **not 3,310 unique appraisals**. Use the archive's import-batch and record-type filters to reconcile a specific snapshot. Batch discovery/counts remain site-scoped, including when a caller guesses another source hash. Nested source fields are displayed as preserved JSON and can be downloaded with the full archive record.
+
 ### CSV preservation
 
 ```sh
@@ -64,6 +74,6 @@ All files/counts are validated before writes. Escaping paths, external symlinks,
 
 ## Verification and remaining acceptance
 
-Backend tests cover access boundaries, canonical customer resolution, idempotent creation, stale revisions, valuation roles, guided completion, private media bytes/ranges, drive/loan records, wholesaler-token privacy, bid revisions and source-file reconciliation. **211 backend tests**, the production web build and **8 existing web tests** passed before deployment. The tests substitute providers/databases; they do not establish live Rego/PPSR/AI acceptance or actual-device camera/signature acceptance. This release changes the web app/backend, not native iOS/Android binaries.
+Backend tests cover access boundaries, canonical customer resolution, idempotent creation, stale revisions, valuation roles, guided completion, private media bytes/ranges, drive/loan records, wholesaler-token privacy, bid revisions, batch isolation and source-file reconciliation. **212 backend tests**, the production web build and **8 existing web tests** passed before deployment. The tests substitute providers/databases; they do not establish live Rego/PPSR/AI acceptance or actual-device camera/signature acceptance. This release changes the web app/backend, not native iOS/Android binaries.
 
 Full iAppraise replacement remains conditional on the current account's complete data/media/directory migration, provider-specific parity, manager acceptance and live integration/device tests. The broader combined scope also contains CRM, stock, PULSE, SMS, external systems and delivery rollout requirements; this appraisal release does not certify every item in that entire document.

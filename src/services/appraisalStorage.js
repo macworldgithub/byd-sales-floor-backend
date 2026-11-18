@@ -20,6 +20,7 @@ function storage(db) {
         return view;
       },
       countDocuments(query,options) { return physical.countDocuments(scope(query),options); },
+      distinct(key,query,options) { return physical.distinct(key,scope(query),options); },
       insertOne(document,options) { return physical.insertOne({...document,[MARKER]:name},options); },
       updateOne(query,update,options) {
         if (update.$set?.[MARKER] || update.$unset?.[MARKER] || update.$rename?.[MARKER]) fail(400,'Appraisal storage namespace is immutable.');
