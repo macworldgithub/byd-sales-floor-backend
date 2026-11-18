@@ -23,12 +23,14 @@ async function fixture(run) {
     allowed_sites: ["BYD Fairfield"],
   };
   const manager = { ...user, id: "manager-1", role: "sales_manager" },
+    globalManager = { ...manager, id: 'global-manager', all_sites: true, site: 'BYD Nunawading', locked_site: '', allowed_sites: [] },
     other = {
       ...user,
       site: "BYD Nunawading",
       locked_site: "BYD Nunawading",
       allowed_sites: ["BYD Nunawading"],
     },
+    otherManager = { ...other, id:'other-manager', role:'sales_manager' },
     leadId = new ObjectId();
   const lead = database({
     leads: [
@@ -68,6 +70,10 @@ async function fixture(run) {
           const account =
             token === "Bearer manager"
               ? manager
+              : token === 'Bearer global'
+                ? globalManager
+              : token === 'Bearer other-manager'
+                ? otherManager
               : token === "Bearer user"
                 ? user
                 : token === "Bearer other"
@@ -139,9 +145,36 @@ async function fixture(run) {
     await new Promise((resolve) => server.close(resolve));
     delete process.env.APPRAISAL_MEDIA_DIR;
     delete process.env.APPRAISAL_WEB_URL;
+    delete process.env.IAPPRAISE_ARCHIVE_DIR;
     await fsp.rm(dir, { recursive: true, force: true });
   }
 }
+test('all-site appraisal requests honour the selected site for creation, details and historical attachments without widening account locks', async () =>
+  fixture(async ({ request, leadId, panel, lead }) => {
+    const selected = { 'X-Site': 'BYD Fairfield' };
+    const created = await request('/appraisals', { method:'POST',token:'global',headers:selected,body:{leadId,requestId:'global-selected-site'} });
+    assert.equal(created.status,200);assert.equal(created.body.data.site,'BYD Fairfield');
+    const route='/appraisals/'+created.body.data.appraisalId;
+    await lead.collection('appraisals').insertOne({...created.body.data,_id:new ObjectId(),appraisalId:'APP-OTHER-SITE',site:'BYD Nunawading'});
+    assert.equal((await request(route,{token:'global',headers:selected})).status,200);
+    assert.equal((await request(route,{token:'global',headers:{'X-Site':'BYD Nunawading'}})).status,404);
+    assert.equal((await request(route,{token:'global',headers:{'X-Site':'All Sites'}})).status,200);
+    assert.equal((await request(route,{token:'manager',headers:{'X-Site':'All Sites'}})).status,200);
+    const otherRoute='/appraisals?site=BYD%20Nunawading';
+    const lockedList=(await request(otherRoute,{token:'manager',headers:{'X-Site':'BYD Nunawading'}})).body;
+    assert.equal(lockedList.pagination.total,1);assert.equal(lockedList.data[0].site,'BYD Fairfield');
+    assert.equal((await request('/appraisals/APP-OTHER-SITE',{token:'manager',headers:{'X-Site':'BYD Nunawading'}})).status,404);
+    assert.equal((await request(route,{token:'global',headers:{'X-Site':'unknown'}})).status,400);
+    const bytes=Buffer.from('preserved source bytes'),filename=require('node:crypto').createHash('sha256').update(bytes).digest('hex');
+    process.env.IAPPRAISE_ARCHIVE_DIR=process.env.APPRAISAL_MEDIA_DIR;
+    await fsp.writeFile(path.join(process.env.IAPPRAISE_ARCHIVE_DIR,filename),bytes);
+    await panel.collection('iappraise_archive').insertOne({_id:'archived-fairfield',kind:'appraisal',site:'BYD Fairfield',media:[{id:'source-photo',filename,bytes:bytes.length,contentType:'application/octet-stream'}]});
+    const media='/appraisals/archive/archived-fairfield/media/source-photo';
+    assert.deepEqual((await request(media,{token:'global',headers:selected})).body,bytes);
+    assert.equal((await request(media,{token:'global',headers:{'X-Site':'BYD Nunawading'}})).status,404);
+    assert.equal((await request(media,{token:'global',headers:{'X-Site':'All Sites'}})).status,200);
+    assert.equal((await request(media,{token:'other-manager',headers:{'X-Site':'BYD Fairfield'}})).status,404);
+  }));
 test("appraisal HTTP routes authenticate all workspace reads and persist raw private evidence with scoped range downloads", async () =>
   fixture(async ({ request, leadId }) => {
     for (const route of [

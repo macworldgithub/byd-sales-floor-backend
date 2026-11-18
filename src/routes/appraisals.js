@@ -4,6 +4,7 @@ const { authenticate } = require("../middleware/auth");
 const { leadConn, deliveryConn } = require("../db");
 const { AppraisalCentre } = require("../services/appraisalCentre");
 const policy = require("../services/appraisalPolicy");
+const { canonicalSite, fail } = require('../services/accountAccess');
 const router = express.Router();
 const service = () => new AppraisalCentre(leadConn.db, deliveryConn.db);
 const run = (fn) => async (req, res, next) => {
@@ -49,6 +50,13 @@ router.use(authenticate);
 router.use((req, res, next) => {
   try {
     policy.access(req.user);
+    // Direct detail/media requests have no site query. Keep their context aligned
+    // with the browser selection; the authenticated account's lock stays intact.
+    if (req.headers['x-site']) {
+      const site = canonicalSite(req.headers['x-site']);
+      if (!site) fail(400, 'Select a valid appraisal site.');
+      req.user = { ...req.user, site };
+    }
     res.set("Cache-Control", "no-store");
     next();
   } catch (error) {

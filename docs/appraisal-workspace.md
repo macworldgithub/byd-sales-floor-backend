@@ -1,6 +1,6 @@
 # BYD appraisal workspace
 
-The BYD Sales Floor web app exposes **Appraisals** in the sidebar, More tools and Customer 360. Records are stored in the existing Lead Centre `appraisals` collection. New appraisals resolve an authorised lead and its canonical customer; caller-supplied customer names, owners, approval states and clearance statuses are ignored. Consultants see their own records; management sees its authorised sites. Delivery-only and contractor accounts cannot enter the workspace.
+The BYD Sales Floor web app exposes **Appraisals** in the sidebar, More tools and Customer 360. Records are stored in the existing Lead Centre `appraisals` collection. New appraisals resolve an authorised lead and its canonical customer; caller-supplied customer names, owners, approval states and clearance statuses are ignored. Consultants see their own records; management sees its authorised sites. The browser's `X-Site` selection also scopes direct appraisal/detail/media requests for all-site managers; it never overrides an authenticated account's site lock. Delivery-only and contractor accounts cannot enter the workspace.
 
 ## Inspection lifecycle
 
@@ -74,6 +74,6 @@ All files/counts are validated before writes. Escaping paths, external symlinks,
 
 ## Verification and remaining acceptance
 
-Backend tests cover access boundaries, canonical customer resolution, idempotent creation, stale revisions, valuation roles, guided completion, private media bytes/ranges, drive/loan records, wholesaler-token privacy, bid revisions, batch isolation and source-file reconciliation. **212 backend tests**, the production web build and **8 existing web tests** passed before deployment. The tests substitute providers/databases; they do not establish live Rego/PPSR/AI acceptance or actual-device camera/signature acceptance. This release changes the web app/backend, not native iOS/Android binaries.
+Backend tests cover access boundaries, canonical customer resolution, idempotent creation, stale revisions, valuation roles, guided completion, private media bytes/ranges, drive/loan records, wholesaler-token privacy, bid revisions, batch isolation, all-site manager selection and source-file reconciliation. **213 backend tests**, the production web build and **8 existing web tests** passed before deployment. The tests substitute providers/databases; they do not establish live Rego/PPSR/AI acceptance or actual-device camera/signature acceptance. This release changes the web app/backend, not native iOS/Android binaries.
 
 Full iAppraise replacement remains conditional on the current account's complete data/media/directory migration, provider-specific parity, manager acceptance and live integration/device tests. The broader combined scope also contains CRM, stock, PULSE, SMS, external systems and delivery rollout requirements; this appraisal release does not certify every item in that entire document.
