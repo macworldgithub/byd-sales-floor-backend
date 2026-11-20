@@ -31,3 +31,7 @@ tmp/
 temp/
 coverage/
 .env
+
+# Python migration tooling
+__pycache__/
+*.py[cod]

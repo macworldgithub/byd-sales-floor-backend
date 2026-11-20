@@ -49,6 +49,16 @@ Source appraisal **2580601** was additionally captured from its rendered detail 
 
 The archive therefore contains **3,310 rows/versions**: 1,605 earlier CSV rows, 1,618 refreshed CSV rows, 86 staff rows and one detailed capture. This is **not 3,310 unique appraisals**. Use the archive's import-batch and record-type filters to reconcile a specific snapshot. Batch discovery/counts remain site-scoped, including when a caller guesses another source hash. Nested source fields are displayed as preserved JSON and can be downloaded with the full archive record.
 
+### Production preservation evidence — 20 November 2026 (Los Angeles)
+
+The latest official CSV contains **1,640 rows**: Nunawading 534, Melbourne City 103, Caroline Springs 963, Wodonga 36 and Fairfield 4. It reconciled independently in production; earlier snapshots and the 86 staff contacts remain preserved. The original CSV SHA-256 is `fe8518353c8d7469b46d54323042dcadadc1bba2f19de315df6b2c6b741f3403`, and its import JSON hash is `2fde21ee1ab624383b2dc6d272988e5bef541b0fa3b251ae928e4654942373af`.
+
+Two additional detailed bundles reconciled: **20 records / 251 media references** (`d22516344d41a1be8aaabe5c18ef43cad33b8cd0bcac4da1072290ef792a618e`) and **17 records / 297 media references** (`bc89af2873de912dcf2f5f72efa7da610c8b63b8f3126ab5fc2b28df89112312`). Together they preserve **37 original appraisal IDs**, **548 media references** and **80 visible audit events**, including all four Fairfield records in that CSV. Media references can repeat the same bytes; 548 is not a unique-file count. The earlier 29-image capture remains as a separate version of an overlapping source ID. Unknown source fields, rendered HTML/text, tables and original capture JSON are retained privately.
+
+Production reconciliation verified **585 distinct content-addressed files** for these two bundles, including their record JSON, original captures, coverage reports and media. None of the media observed in these 37 captures are pending retrieval. Authenticated media returned the expected checksum; anonymous access returned 401 and a different active site returned 404. Authenticated archive filters matched both bundles and every site in the latest CSV. The archive now holds **4,987 rows/versions**, comprising the three CSV snapshots, 86 staff records and 38 detailed versions covering 37 original IDs. These are not unique account appraisals. Appraisal/report endpoints and the wholesale portal route also passed live checks.
+
+This remains a partial historical migration. The account continued receiving new records during capture, and one make filter already exceeded its saved CSV count. The private checkpoint records the next observed source URL and per-filter progress for resumption and final delta reconciliation. Browser control became unavailable during the scan, so the remaining detailed records, historical videos and external dealer/wholesaler directory are outstanding. The browser preparer passed six local tests, including stale-page rejection and preservation of explicit media gaps. Provider-dependent services and the remaining acceptance requirements below are unchanged.
+
 ### CSV preservation
 
 ```sh
@@ -71,6 +81,23 @@ node scripts/appraisal-indexes.js
 The version 1 manifest declares `namespace` (the verified source account), `expectedRecords`, `expectedCounts` for `appraisal`, `dealer`, `wholesaler`, `dealer_staff`, `expectedMedia`, and `records`. Each record has `kind`, original `sourceId`, explicit canonical BYD `site`, and its original JSON `path`, `sha256` and byte `size`. Optional `media` entries include original `sourceId`, relative `path`, SHA-256, byte `size`, `name` and `contentType`. `sourceFiles` may retain original export files with the same path/checksum/size contract. Dealer/wholesaler records require explicit `partner` details: `name`, `company`, `email`, `phone`, `address`, `licence`, `abn`, `notes`, `active`. Original unknown fields remain in the source JSON.
 
 All files/counts are validated before writes. Escaping paths, external symlinks, duplicate upstream IDs and corrupt files fail validation. Imports preserve immutable record/media versions, keep original bytes on private disk, reconcile each attachment checksum and never overwrite staff-edited partner contacts. Rerunning the same bundle is safe. Adding changed media preserves the earlier snapshot. Historical media are preserved even if they exceed new-capture limits. Imported external contacts can receive new valuations through this platform; imported source roles never create login accounts or grant permissions. Archived records/media are manager-only and site-scoped. `completeSourceVerified` is an operator assertion, not a provider completeness guarantee; do not set it from CSV counts alone.
+
+### Browser-captured records when no full export/API is available
+
+The signed-in account exposes detailed records and a **More Options → View Audit Logs** dialog. Preserve the actual `/form-<id>` URL, rendered reference, tables, comments, image/video/document references and visible audit rows. Keep a private checkpoint keyed by the original IDs, with each captured JSON file named by its SHA-256 under `captures/`. The checkpoint's `current[id].sha256` must match those original bytes. Duplicate registrations and VINs remain independent source IDs.
+
+```sh
+python3 scripts/prepare-iappraise-browser.py /private/capture/checkpoint.json /private/prepared --workers 4
+# To prepare only a new batch, pass a JSON array of its original IDs:
+python3 scripts/prepare-iappraise-browser.py /private/capture/checkpoint.json /private/prepared-next --ids /private/new-ids.json
+node scripts/import-iappraise-bundle.js /private/prepared/manifest.json
+node scripts/import-iappraise-bundle.js /private/prepared/manifest.json --apply
+python3 -m unittest discover -s tests -p 'iappraise_browser_test.py'
+```
+
+The preparer validates the account, reviewed BYD site mapping, source URL/reference and capture hashes. It downloads only links observed in those records from the reviewed iAppraise S3 buckets, without browser cookies, source passwords or guessed API/record URLs. Redirects to other origins are rejected. It retains inline source-media bytes, checks cached files when resuming, and preserves original capture JSON alongside the import records. Media failures stay explicit in each record's `migrationCoverage.pendingMedia` and in `coverage.json`; a prepared/imported subset is never marked as a full account backup. Other source buckets and authenticated media need their own reviewed browser retrieval before they can be reconciled.
+
+Avoid loading the entire account into the source web app at once: its persisted browser state can exceed the site's storage quota. Bounded make/site filters and the visible pagination controls permit smaller scans. Reconcile each group's original IDs and count against the current official CSV, record capture times, and check for new source records before cutover. Visible wholesaler offers preserve their names, values and history within each appraisal; they are not substitutes for the external contact directory or permission to create partner accounts.
 
 ## Verification and remaining acceptance
 
