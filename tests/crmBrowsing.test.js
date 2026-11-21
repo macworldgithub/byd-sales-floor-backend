@@ -267,3 +267,16 @@ test('calendar merges and paginates all sources chronologically with stable ties
     'delivery:8',
   ]);
 });
+
+test('first calendar page reads each source once for rows, totals, filters and next event', async () => {
+  let calls = 0;
+  const db = { collection: name => ({ aggregate(pipeline) {
+    calls++;
+    assert.ok(pipeline.at(-1).$facet.rows);
+    return { async toArray() { return [{ total: [{count:1}], filters: [], rows: [{ _id:name, stamp:new Date('2026-11-21T01:00:00Z'), type:'drive',label:'Test Drive' }] }]; } };
+  } }) };
+  const result = await calendar({lead:db,panel:db},{from:'2026-11-21',to:'2026-11-22',limit:25});
+  assert.equal(calls,3);
+  assert.equal(result.data.length,3);
+  assert.equal(result.pagination.total,3);
+});

@@ -11,7 +11,13 @@ const checks = require('../services/vehicleChecks');
 const media = require('../services/floorMedia');
 const router = express.Router();
 const service = () => new SalesFloorOperations(leadConn.db, deliveryConn.db);
-const run = fn => async (req, res, next) => { try { res.set('Cache-Control', 'no-store'); const data = await fn(req, service()); res.json({ success: true, data }); } catch (error) { next(error); } };
+const cachedPaths = new Set(['/summary', '/pulse', '/reports', '/staff', '/inventory', '/notifications', '/tasks']);
+const run = fn => async (req, res, next) => { try {
+  res.set('Cache-Control', 'no-store');
+  const read = () => fn(req, service());
+  const data = req.method === 'GET' && cachedPaths.has(req.path) ? await require('../services/readCache').readRequest(leadConn.db, req, read) : await read();
+  res.json({ success: true, data });
+} catch (error) { next(error); } };
 
 // Opaque media URLs are deliberately shareable with the intended SMS recipient.
 router.get('/media/:id/:token', async (req, res, next) => {

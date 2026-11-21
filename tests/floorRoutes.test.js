@@ -21,6 +21,7 @@ test('Floor endpoints require the right platform, prevent shared caching and exp
     if (key === 'express') return express;
     if (key === '../db') return { leadConn: { db: {} }, deliveryConn: { db: {} } };
     if (key === '../services/floorBrowsing') return service;
+    if (key === '../services/readCache') return require('../src/services/readCache');
     if (key === '../middleware/auth') return { authenticate(req, res, next) { if (!req.headers.authorization) return res.sendStatus(401); req.user = account; next(); } };
     throw Error(key);
   } });

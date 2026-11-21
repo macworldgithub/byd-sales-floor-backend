@@ -36,7 +36,7 @@ router.get('/bootstrap', async (req, res, next) => {
     const { leadConn, deliveryConn, ensureDbConnected } = require('../db');
     await ensureDbConnected();
     res.set('Cache-Control', 'no-store');
-    res.json({ success: true, data: await require('../services/crmLive').bootstrap({ lead: leadConn.db, panel: deliveryConn.db }, req.query, req.user) });
+    res.json({ success: true, data: await require('../services/readCache').readRequest(leadConn.db, req, () => require('../services/crmLive').bootstrap({ lead: leadConn.db, panel: deliveryConn.db }, req.query, req.user)) });
   } catch (error) { next(error); }
 });
 router.get('/reports/summary', async (req, res, next) => {

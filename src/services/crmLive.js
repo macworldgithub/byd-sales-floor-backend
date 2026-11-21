@@ -56,7 +56,7 @@ async function bootstrap({ lead, panel }, query, user) {
       lead
         .collection("inventories")
         .find(scope(query, user, ["location", "yard", "site"]), {
-          projection: { model: 1, specifications: 1, paint: 1, location: 1 },
+          projection: { model: 1, 'specifications.model': 1, 'specifications.badge': 1, 'specifications.colour': 1, paint: 1 },
         })
         .toArray(),
       panel
@@ -276,9 +276,12 @@ async function boards(panel, query = {}, user = {}, team = false) {
   const filter = scope(query, user);
   const [opps, logs, allocations, targets, legacyTargets, staff] =
     await Promise.all([
-      panel.collection("opportunities").find(filter).toArray(),
-      panel.collection("saleslogentries").find(filter).toArray(),
-      panel.collection("allocations").find(filter).toArray(),
+      panel.collection("opportunities").find(filter, { projection: { owner_name: 1, consultant_name: 1, consultant: 1, assigned_to_name: 1, assigned_to: 1, site: 1, stage: 1,
+        sold_at: 1, written_at: 1, createdAt: 1, opportunity_id: 1, sales_log_id: 1, gross_margin: 1, gross: 1, next_action_at: 1 } }).toArray(),
+      panel.collection("saleslogentries").find(filter, { projection: { owner_name: 1, consultant_name: 1, consultant: 1, assigned_to_name: 1, assigned_to: 1, site: 1,
+        deal_date: 1, createdAt: 1, crm_opportunity_id: 1, opportunity_id: 1, sales_log_id: 1, gross_margin: 1, gross: 1 } }).toArray(),
+      panel.collection("allocations").find(filter, { projection: { owner_name: 1, consultant_name: 1, consultant: 1, assigned_to_name: 1, assigned_to: 1, site: 1,
+        allocated_at: 1, createdAt: 1, first_contact_at: 1, accepted_at: 1 } }).toArray(),
       panel.collection("crmtargets").find(filter).toArray(),
       panel.collection("targets").find(filter).toArray(),
       panel

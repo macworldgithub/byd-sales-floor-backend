@@ -36,7 +36,7 @@ for (const name of ['leads', 'calendar', 'today']) {
   router.get('/' + name, async (req, res, next) => {
     try {
       res.set('Cache-Control', 'private, no-store');
-      res.json(await browsing[name]({ lead: leadConn.db, panel: deliveryConn.db }, req.query, req.user));
+      res.json(await require('../services/readCache').readRequest(leadConn.db, req, () => browsing[name]({ lead: leadConn.db, panel: deliveryConn.db }, req.query, req.user)));
     } catch (error) { next(error); }
   });
 }

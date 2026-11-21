@@ -33,6 +33,26 @@ function mergeMessages(rows) {
 function buildThreads(conversations, messages, leads, clients) {
   const groups = new Map();
   const records = [...leads.map(l => ({ ...l, site: l.dealer || l.site })), ...clients.map(c => ({ ...c, site: c.site_location || c.site }))];
+  const byPhone = new Map(), clientsByPhoneSite = new Map(), clientsById = new Map(), conversationsByPhone = new Map(), conversationByMessage = new Map(), outboundConversations = new Map(), outboundById = new Map();
+  for (const row of records) {
+    const key = phoneKey(row.phone);
+    if (key) { if (!byPhone.has(key)) byPhone.set(key, []); byPhone.get(key).push(row); }
+  }
+  for (const client of clients) {
+    const key = siteKey(client.site_location || client.site) + ':' + phoneKey(client.phone);
+    if (!clientsByPhoneSite.has(key)) clientsByPhoneSite.set(key, client);
+    for (const value of [client.id, String(client._id)]) if (!clientsById.has(value)) clientsById.set(value, client);
+  }
+  for (const conversation of conversations) {
+    const key = phoneKey(conversation.phone);
+    if (!conversationsByPhone.has(key)) conversationsByPhone.set(key, []);
+    conversationsByPhone.get(key).push(conversation);
+    for (const message of conversation.messages || []) {
+      if (!conversationByMessage.has(String(message.id))) conversationByMessage.set(String(message.id), conversation);
+      if (message.sender !== 'user' && !outboundConversations.has(String(message.id))) outboundConversations.set(String(message.id), conversation);
+    }
+  }
+  for (const message of messages) if (message.direction === 'outbound' && !outboundById.has(String(message.provider_message_id))) outboundById.set(String(message.provider_message_id), message);
   function group(phone, site, metadata) {
     const key = siteKey(site) + ':' + (phoneKey(phone) || metadata._id);
     if (!groups.has(key)) groups.set(key, { ...metadata, phone: phoneKey(phone) ? '+' + phoneKey(phone) : phone, dealer: site || '', messages: [] });
@@ -44,21 +64,21 @@ function buildThreads(conversations, messages, leads, clients) {
     g.threadIds.push(String(c._id));
     g.leadId ||= c.leadId;
     g.manualProspectId ||= c.manualProspectId;
-    const client = clients.find(client => phoneKey(client.phone) === phoneKey(c.phone) && siteKey(client.site_location || client.site) === siteKey(c.dealer));
+    const client = clientsByPhoneSite.get(siteKey(c.dealer) + ':' + phoneKey(c.phone));
     g.client_id ||= client?.id || (client?._id ? String(client._id) : null);
     g.messages.push(...(c.messages || []));
   }
   for (const m of messages) {
-    const matches = records.filter(r => phoneKey(r.phone) && phoneKey(r.phone) === phoneKey(m.phone));
-    const client = clients.find(c => m.client_id && [c.id, String(c._id)].includes(String(m.client_id)));
+    const matches = byPhone.get(phoneKey(m.phone)) || [];
+    const client = m.client_id ? clientsById.get(String(m.client_id)) : undefined;
     const sites = [...new Set(matches.map(r => siteKey(r.site)).filter(Boolean))];
-    const conversationSites = conversations.filter(c => phoneKey(c.phone) === phoneKey(m.phone)).map(c => c.dealer);
+    const conversationSites = (conversationsByPhone.get(phoneKey(m.phone)) || []).map(c => c.dealer);
     const uniqueConvoSites = [...new Set(conversationSites.map(siteKey).filter(Boolean))];
     const correlation = m.direction === 'inbound' ? m.provider_response?.original_message_id : null;
-    const original = correlation ? messages.find(row => row.direction === 'outbound' && String(row.provider_message_id) === String(correlation)) : null;
-    const originalClient = original?.client_id ? clients.find(c => [c.id, String(c._id)].includes(String(original.client_id))) : null;
-    const correlatedThread = correlation ? conversations.find(c => (c.messages || []).some(msg => msg.sender !== 'user' && String(msg.id) === String(correlation))) : null;
-    const sourceThread = conversations.find(c => (c.messages || []).some(msg => String(msg.id) === String(m.provider_message_id)));
+    const original = correlation ? outboundById.get(String(correlation)) : null;
+    const originalClient = original?.client_id ? clientsById.get(String(original.client_id)) : null;
+    const correlatedThread = correlation ? outboundConversations.get(String(correlation)) : null;
+    const sourceThread = conversationByMessage.get(String(m.provider_message_id));
     const site = m.site || original?.site || originalClient?.site_location || originalClient?.site || correlatedThread?.dealer || sourceThread?.dealer || client?.site_location || client?.site || (sites.length === 1 ? matches.find(r => siteKey(r.site))?.site : '') || (sites.length <= 1 && uniqueConvoSites.length === 1 ? conversationSites[0] : '');
     const lead = matches.find(r => r.dealer && siteKey(r.dealer) === siteKey(site));
     const g = group(m.phone, site, {

@@ -220,7 +220,9 @@ class SalesFloorMobile {
     const config = await this.config(site);
     if (query.group === 'true' && !p.isManager(user)) fail(403, 'Group inventory requires management access.');
     const filter = and(this.filter(user, { site }, 'inventories'), ...(query.group === 'true' ? [{ status: /^(Available|In Stock|InStock|On Hand)$/i }] : []));
-    const rows = await this.lead.collection('inventories').find(filter).toArray();
+    const rows = await this.lead.collection('inventories').find(filter, { projection: { stock: 1, identifier: 1, 'registration.vin': 1, 'registration.rego': 1, 'specifications.make': 1, 'specifications.model': 1, 'specifications.badge': 1,
+      'specifications.year': 1, 'specifications.colour': 1, model: 1, paint: 1, daysInStock: 1, 'lmStats.daysOnMarket': 1,
+      'shirleyData.daysOfInventory': 1, 'shirleyData.inStockDate': 1, 'priceData.ui': 1, price: 1, status: 1, costPrice: 1, cost: 1, location: 1, site: 1, specs: 1 } }).toArray();
     const normalized = rows.map(raw => {
       const value = raw.daysInStock ?? raw.lmStats?.daysOnMarket ?? raw.shirleyData?.daysOfInventory;
       const entered = raw.shirleyData?.inStockDate;

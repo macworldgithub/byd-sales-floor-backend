@@ -13,7 +13,7 @@ const Conversation = require('../models/lead/Conversation');
 const { authenticate } = require('../middleware/auth');
 const { getThreads, allowedSite } = require('../services/threadHistory');
 const { leadConn, deliveryConn } = require('../db');
-const history = (req) => getThreads(leadConn.db, deliveryConn.db, req.user, req.query.dealer || req.query.site, { phone: req.smsConversation?.phone || req.query.phone });
+const history = (req) => require('../services/readCache').readRequest(leadConn.db, req, () => getThreads(leadConn.db, deliveryConn.db, req.user, req.query.dealer || req.query.site, { phone: req.smsConversation?.phone || req.query.phone }));
 
 
 const router = express.Router();

@@ -120,6 +120,7 @@ async function ensureIndexes() {
       holdColl.createIndex({ stock_id: 1 }),
     ]);
     console.log('✅ CRM Compound & Performance DB Indexes verified');
+    await require('./services/performanceIndexes').ensurePerformanceIndexes(leadConn.db, deliveryConn.db);
   } catch (err) {
     console.warn('⚠️  Index creation notice:', err.message);
   }

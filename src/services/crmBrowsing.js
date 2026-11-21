@@ -66,6 +66,9 @@ function siteScope(query, user = {}, fields = ['site']) {
     ''
   );
   return {
+    // This candidate predicate lets MongoDB use ordinary site indexes. The
+    // authoritative-field expression below still decides access when fields disagree.
+    $or: fields.map(field => ({ [field]: match })),
     $expr: {
       $regexMatch: {
         input: {
@@ -76,7 +79,8 @@ function siteScope(query, user = {}, fields = ['site']) {
     },
   };
 }
-async function options(collection, scope, fields) {
+async function options(db, collection, scope, fields) {
+  return require('./readCache').cached(db, { kind: 'browsing-options', collection: collection.collectionName, scope, fields }, async () => {
   const entries = await Promise.all(
     Object.entries(fields).map(async ([name, columns]) => {
       const values = (
@@ -97,6 +101,7 @@ async function options(collection, scope, fields) {
     })
   );
   return Object.fromEntries(entries);
+  });
 }
 
 async function leads(db, query = {}, user = {}) {
@@ -200,7 +205,7 @@ async function leads(db, query = {}, user = {}) {
       .skip((pagination.page - 1) * pagination.limit)
       .limit(pagination.limit)
       .toArray(),
-    options(collection, scope, {
+    options(db, collection, scope, {
       stages: ['stage'],
       statuses: ['status'],
       sources: ['source'],
@@ -323,7 +328,7 @@ async function pipeline(db, query = {}, user = {}) {
       .skip((pagination.page - 1) * pagination.limit)
       .limit(pagination.limit)
       .toArray(),
-    options(collection, scope, {
+    options(db, collection, scope, {
       models: ['model'],
       owners: ['owner_name'],
       saleTypes: ['sale_type'],
@@ -596,6 +601,7 @@ function calendarEvent(row, source) {
 }
 async function calendar(databases, query = {}, user = {}) {
   paging(query, 0);
+  const firstPage = Number(query.page || 1) === 1;
   const sources = eventPipelines(databases, query, user);
   const stats = await Promise.all(
     sources.map(async (source) => {
@@ -605,6 +611,10 @@ async function calendar(databases, query = {}, user = {}) {
           ...source.base,
           {
             $facet: {
+              ...(firstPage ? { rows: [
+                { $match: source.filtered[source.filtered.length - 1].$match },
+                { $sort: { stamp: 1, _id: 1 } }, { $limit: Number(query.limit || 25) },
+              ] } : {}),
               next: [
                 { $match: { $and: [source.filtered[source.filtered.length - 1].$match, { stamp: { $gte: new Date() }, status: { $nin: ['Cancelled', 'Completed', 'No Show', 'Delivered', 'Delivered / Won', 'Lost / Parked'] } }] } },
                 { $sort: { stamp: 1, _id: 1 } }, { $limit: 1 },
@@ -631,6 +641,7 @@ async function calendar(databases, query = {}, user = {}) {
         total: result?.total[0]?.count || 0,
         filters: result?.filters[0] || {},
         next: result?.next?.[0] ? calendarEvent(result.next[0], source.source) : null,
+        rows: result?.rows,
       };
     })
   );
@@ -641,7 +652,9 @@ async function calendar(databases, query = {}, user = {}) {
   const offset = (pagination.page - 1) * pagination.limit;
   const batches = await Promise.all(
     sources.map(async (source, i) =>
-      !stats[i].total
+      firstPage && stats[i].rows
+        ? stats[i].rows.map(row => calendarEvent(row, source.source))
+        : !stats[i].total
         ? []
         : (
             await source.db

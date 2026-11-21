@@ -59,6 +59,13 @@ app.use(cors({
 }));
 app.use(express.json({ limit: '15mb' }));
 app.use(express.urlencoded({ extended: true, limit: '15mb' }));
+app.use((req, res, next) => {
+  if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+    // Clear even after a failed orchestration: it may have persisted partial work.
+    res.on('finish', () => require('./services/readCache').invalidateReads());
+  }
+  next();
+});
 
 // Logging: combined for production, dev for local testing
 const isProd = process.env.NODE_ENV === 'production';
