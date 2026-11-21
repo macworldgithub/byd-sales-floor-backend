@@ -20,7 +20,20 @@ router.get('/media/:id/:token', async (req, res, next) => {
     const hash = crypto.createHash('sha256').update(req.params.token).digest('hex');
     if (!record || record.tokenHash !== hash) return res.status(404).end();
     res.set({ 'Content-Type': record.contentType, 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'private, max-age=3600' });
-    res.sendFile(path.join(media.directory(), record.filename));
+    if (record.storage !== 'mongo') return res.sendFile(path.join(media.directory(), record.filename));
+    const { GridFSBucket } = require('mongoose').mongo;
+    let start = 0, end = record.bytes;
+    if (req.headers.range) {
+      const match = /^bytes=(\d+)-(\d*)$/.exec(req.headers.range);
+      if (!match) return res.status(416).set('Content-Range', `bytes */${record.bytes}`).end();
+      start = Number(match[1]); end = match[2] ? Math.min(Number(match[2]) + 1, record.bytes) : record.bytes;
+      if (start >= end || start >= record.bytes) return res.status(416).set('Content-Range', `bytes */${record.bytes}`).end();
+      res.status(206).set('Content-Range', `bytes ${start}-${end - 1}/${record.bytes}`);
+    }
+    res.set({ 'Accept-Ranges': 'bytes', 'Content-Length': String(end - start) });
+    const stream = new GridFSBucket(deliveryConn.db, { bucketName: 'floor_media_files' }).openDownloadStream(record._id, { start, end });
+    stream.on('error', error => { if (res.headersSent) res.destroy(error); else next(error); });
+    res.on('close', () => stream.destroy()); stream.pipe(res);
   } catch (error) { next(error); }
 });
 
@@ -37,6 +50,7 @@ router.post('/virtualyard/contract-signed', run(async req => {
 router.use(authenticate);
 router.use((req, res, next) => {
   if (Array.isArray(req.user.platform_access) && !req.user.platform_access.includes('sales_floor')) return res.status(403).json({ success: false, message: 'Sales Floor access required.' });
+  if (req.user.platform === 'sales_floor' && req.user.role === 'super_admin' && !Array.isArray(req.user.allowed_sites)) req.user = { ...req.user, all_sites: true };
   if (req.user.role === 'contractor' && !/^\/(bootstrap|staff|presence|notifications|media|deliveries|push-token|push-test|push-receipts)(?:\/|$)/.test(req.path)) return res.status(403).json({ success: false, message: 'Contractors can access only assigned delivery work and presence.' });
   // All-site accounts have no lock. Their selected mobile site still needs to
   // scope record reads and writes, including endpoints without a query string.
@@ -274,6 +288,10 @@ router.post('/followups/:id/cancel', run(async (req, s) => {
   if (!result.modifiedCount) fail(409, 'This follow-up cannot be cancelled. Refresh its status.');
   return { id: req.params.id, status: 'cancelled' };
 }));
+const uploads = require('../services/floorMediaUploads');
+router.post('/media/uploads', run((req, s) => uploads.start(s, req.body, req.user)));
+router.put('/media/uploads/:id/:part', express.raw({ type: 'application/octet-stream', limit: '2mb' }), run((req, s) => uploads.append(s, req.params.id, req.params.part, req.body, req.user)));
+router.post('/media/uploads/:id/complete', run((req, s) => uploads.finish(s, req.params.id, req.user)));
 router.post('/media', express.raw({ type: ['image/*', 'video/*'], limit: '65mb' }), run((req, s) => media.upload(s, req.query, req.body, req.headers['content-type'] || '', req.user)));
 router.get('/reports.csv', async (req, res, next) => {
   try {

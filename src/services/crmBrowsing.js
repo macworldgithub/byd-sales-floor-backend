@@ -111,6 +111,11 @@ async function leads(db, query = {}, user = {}) {
         : { isArchived: { $ne: true } },
   ]);
   const conditions = [scope];
+  if (query.assignment === 'unassigned') conditions.push({ $and: [
+    { $or: [{ assignedTo: { $exists: false } }, { assignedTo: null }, { assignedTo: '' }] },
+    { $or: [{ allocatedPersonFullName: { $exists: false } }, { allocatedPersonFullName: null }, { allocatedPersonFullName: '' }] }
+  ] });
+
   if (active(query.leadYard))
     conditions.push(
       siteScope({ site: query.leadYard }, {}, ['dealer', 'site', 'dealerName'])

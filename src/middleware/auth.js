@@ -40,7 +40,7 @@ const authenticate = async (req, res, next) => {
       return res.status(401).json({ success: false, message: 'Session revoked. Please sign in again.' });
     }
     const platform = decoded.platform || 'sales_floor';
-    if (!hasPlatform(account, platform) || (req.baseUrl === '/api/crm' && !hasPlatform(account, 'crm'))) {
+    if (!hasPlatform(account, platform) || (req.baseUrl === '/api/crm' && platform !== 'sales_floor' && !hasPlatform(account, 'crm'))) {
       return res.status(403).json({ success: false, message: 'This account does not have access to this platform.' });
     }
     const floorAdminRead = platform === 'sales_floor' && req.method === 'GET' &&

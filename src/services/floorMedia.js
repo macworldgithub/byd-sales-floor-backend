@@ -1,7 +1,7 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { ObjectId } = require('mongoose').mongo;
+const { ObjectId, GridFSBucket } = require('mongoose').mongo;
 const { fail } = require('./accountAccess');
 const { geofence } = require('./salesFloorPolicy');
 const directory = () => path.resolve(process.env.FLOOR_MEDIA_DIR || path.join(__dirname, '../../.runtime/media'));
@@ -42,7 +42,7 @@ function inspect(bytes, contentType) {
 }
 async function upload(service, input, bytes, contentType, user) {
   const subject = input.clientId ? await service.record('clients', input.clientId, user) : await service.record('leads', input.leadId, user);
-  const base = process.env.PUBLIC_API_URL;
+  const base = process.env.PUBLIC_API_URL || (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : '');
   if (!base || !/^https:\/\//.test(base)) fail(503, 'Configure an HTTPS PUBLIC_API_URL before sharing media.');
   const metadata = inspect(bytes, contentType.split(';')[0]);
   if (input.clientId && !(subject.accessories || []).some(accessory => String(accessory.id || accessory._id) === input.accessoryId)) fail(400, 'Choose the accessory job for this completion photo.');
@@ -56,9 +56,18 @@ async function upload(service, input, bytes, contentType, user) {
     if (distance > config.geofence.radiusMeters) fail(409, 'Contractor completion proof must be captured on-site.');
   }
   const _id = new ObjectId(), token = crypto.randomBytes(24).toString('hex'), filename = `${_id}.${metadata.extension}`;
-  await fs.mkdir(directory(), { recursive: true, mode: 0o700 });
-  await fs.writeFile(path.join(directory(), filename), bytes, { mode: 0o600, flag: 'wx' });
-  const record = { _id, ...metadata, bytes: bytes.length, filename, tokenHash: crypto.createHash('sha256').update(token).digest('hex'),
+  const storage = process.env.VERCEL ? 'mongo' : 'disk';
+  if (storage === 'mongo') {
+    const bucket = new GridFSBucket(service.panel, { bucketName: 'floor_media_files' });
+    await new Promise((resolve, reject) => {
+      const stream = bucket.openUploadStreamWithId(_id, filename, { contentType: metadata.contentType });
+      stream.on('error', reject); stream.on('finish', resolve); stream.end(bytes);
+    });
+  } else {
+    await fs.mkdir(directory(), { recursive: true, mode: 0o700 });
+    await fs.writeFile(path.join(directory(), filename), bytes, { mode: 0o600, flag: 'wx' });
+  }
+  const record = { _id, storage, ...metadata, bytes: bytes.length, filename, tokenHash: crypto.createHash('sha256').update(token).digest('hex'),
     publicUrl: `${base.replace(/\/$/, '')}/api/mobile/media/${_id}/${token}`, site: subject.dealer || subject.site_location || subject.site,
     leadId: input.clientId ? null : String(subject._id), clientId: input.clientId ? String(subject._id) : null, accessoryId: input.accessoryId || null, owner_user_id: user.id, createdAt: new Date(),
     latitude: Number(input.latitude) || null, longitude: Number(input.longitude) || null };

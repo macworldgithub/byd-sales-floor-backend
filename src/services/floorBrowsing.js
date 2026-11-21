@@ -22,7 +22,8 @@ async function calendar(databases, query, user) {
 }
 async function today(databases, query, user, now = new Date()) {
   const date = day(now), next = addDays(date, 1), scope = accountScope(user);
-  const leadFilter = { $and: [leadScope(user), { isArchived: { $ne: true } }] };
+  if (!scope.locked_site && query.filterSite && !/^all(?:\s|$)/i.test(query.filterSite)) scope.locked_site = query.filterSite;
+  const leadFilter = { $and: [browse.siteScope({}, scope, ['dealer', 'site', 'dealerName']), { isArchived: { $ne: true } }] };
   const attention = { $and: [leadFilter, priority] };
   const collection = databases.lead.collection('leads');
   const [totalLeads, needsMe, records, events, deliveries, conversations] = await Promise.all([

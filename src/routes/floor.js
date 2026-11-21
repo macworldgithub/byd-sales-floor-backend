@@ -9,6 +9,14 @@ router.use((req, res, next) => {
     return res.status(403).json({ success: false, message: 'Sales Floor access is required.' });
   next();
 });
+router.post('/allocations/recover', async (req, res, next) => {
+  try {
+    if (!require('../services/salesFloorPolicy').isManager(req.user)) return res.status(403).json({ success: false, message: 'Management access required.' });
+    const query = { ...req.query, site: req.user.locked_site || req.headers['x-site'] || req.query.site };
+    const data = await require('../services/leadAllocation').recover(leadConn.db, deliveryConn.db, query, req.user, req.body?.apply === true);
+    res.set('Cache-Control', 'private, no-store').json({ success: true, data });
+  } catch (error) { next(error); }
+});
 router.get('/calendar.ics', async (req, res, next) => {
   try {
     const events = [];

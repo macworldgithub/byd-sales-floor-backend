@@ -199,11 +199,27 @@ router.patch('/customers/:id', async (req, res, next) => {
   }
 });
 
-router.post('/customers/:id/merge', async (req, res, next) => {
+router.post('/customers/:id/merge', requireRole('manager', 'sales_manager', 'site_admin', 'super_admin', 'admin', 'bdc'), async (req, res, next) => {
   try {
     const { sourceId } = req.body;
     if (!sourceId) {
       return res.status(400).json({ success: false, message: 'sourceId is required' });
+    }
+    const { leadConn, deliveryConn } = require('../db');
+    const access = require('../services/accountAccess');
+    if (sourceId === req.params.id) access.fail(400, 'Select two different customers.');
+    const targetRecord = await deliveryConn.db.collection('customers').findOne({ customer_id: req.params.id });
+    const sourceRecord = await deliveryConn.db.collection('customers').findOne({ customer_id: sourceId });
+    if (!targetRecord || !sourceRecord) access.fail(404, 'Customer not found.');
+    if (access.siteKey(targetRecord.site) !== access.siteKey(sourceRecord.site)) access.fail(403, 'Only customers at the same dealership can be merged.');
+    if (targetRecord.lead_prospect_id && sourceRecord.lead_prospect_id && targetRecord.lead_prospect_id !== sourceRecord.lead_prospect_id && access.canonicalSite(targetRecord.site)?.startsWith('BYD')) {
+      const operations = new (require('../services/salesFloorOperations').SalesFloorOperations)(leadConn.db, deliveryConn.db);
+      for (const customer of [targetRecord, sourceRecord]) {
+        const enquiry = await operations.record('leads', customer.lead_prospect_id, req.user);
+        if (enquiry.customerId && enquiry.customerId !== customer.customer_id) access.fail(409, 'The linked enquiry belongs to a different customer. Review its identity before merging.');
+        await leadConn.db.collection('leads').updateOne({ _id: enquiry._id }, { $set: { customerId: customer.customer_id } });
+      }
+      await operations.mergeLeads(targetRecord.lead_prospect_id, sourceRecord.lead_prospect_id, req.user);
     }
     const target = await crmService.mergeCustomers(req.params.id, sourceId);
     res.json({ success: true, message: 'Customers merged successfully', data: target });
@@ -452,7 +468,7 @@ router.get('/allocations', async (req, res, next) => {
 });
 
 // POST /api/crm/allocations – Direct BDC push intake path (§7.3)
-router.post('/allocations', async (req, res, next) => {
+router.post('/allocations', requireRole('manager', 'sales_manager', 'site_admin', 'super_admin', 'admin', 'bdc'), async (req, res, next) => {
   try {
     const alloc = await crmService.createAllocation(req.body);
     res.status(201).json({ success: true, message: 'Lead intake allocation created', data: alloc });
@@ -473,8 +489,8 @@ router.post('/allocations/check-sla', async (req, res, next) => {
 
 router.post('/allocations/:id/accept', async (req, res, next) => {
   try {
-    const consultantName = req.body.consultantName || req.user?.name || '';
-    const accepted = await crmService.acceptAllocation(req.params.id, consultantName);
+    const consultantName = req.user?.name || '';
+    const accepted = await crmService.acceptAllocation(req.params.id, consultantName, req.user);
     res.json({ success: true, message: 'Allocation SLA accepted', data: accepted });
   } catch (err) {
     next(err);

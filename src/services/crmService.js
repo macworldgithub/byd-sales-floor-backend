@@ -234,6 +234,7 @@ const crmService = {
 
     // Duplicate detection (§5.1, AC-1)
     const existing = await collection.findOne({
+      ...(data.site ? { site: require('./staffDirectory').siteRegex(data.site) } : {}),
       $or: [...(formattedPhone ? [{ phone: formattedPhone }] : []), ...(data.email ? [{ email: data.email.toLowerCase() }] : [])],
     });
 
@@ -1480,6 +1481,16 @@ const crmService = {
     const oppColl = deliveryConn.db.collection('opportunities');
     const tlColl = deliveryConn.db.collection('timelineevents');
 
+    const projection = require('./leadAllocation');
+    const { site, person } = await projection.assignee(deliveryConn.db, data);
+    data = { ...data, site, assigned_to: person.name };
+    // Validate the explicit enquiry before creating any allocation/customer.
+    if (data.lead_prospect_id) {
+      const original = await leadConn.db.collection('leads').findOne({ _id: projection.reference(data.lead_prospect_id) });
+      if (!original) throw Object.assign(new Error('Original Lead Centre enquiry not found.'), { statusCode: 404 });
+      if (!require('./staffDirectory').siteRegex(site).test(original.dealer || original.site || original.dealerName || ''))
+        throw Object.assign(new Error('The enquiry belongs to another dealership.'), { statusCode: 403 });
+    }
     const formattedPhone = formatPhoneE164(data.phone);
     if (!formattedPhone && !data.email) throw Object.assign(new Error('A phone number or email address is required.'), { statusCode: 400 });
 
@@ -1488,16 +1499,19 @@ const crmService = {
       const existing = await allocColl.findOne({
         $or: [
           data.event_id ? { event_id: data.event_id } : null,
-          data.lead_prospect_id ? { lead_prospect_id: data.lead_prospect_id, status: { $in: ['pending', 'accepted'] } } : null,
+          data.lead_prospect_id ? { lead_prospect_id: data.lead_prospect_id, status: { $in: ['pending', 'accepted', 'escalated'] } } : null,
         ].filter(Boolean),
       });
       if (existing) {
-        return { ...existing, duplicate: true };
+        if (data.lead_prospect_id && String(existing.lead_prospect_id) !== String(data.lead_prospect_id))
+          throw Object.assign(new Error('This allocation event belongs to a different enquiry.'), { statusCode: 409 });
+        return { ...await projection.project(leadConn.db, deliveryConn.db, existing, data, person), duplicate: true };
       }
     }
 
     // Match or create customer
     let customer = await custColl.findOne({
+      site: require('./staffDirectory').siteRegex(data.site),
       $or: [...(formattedPhone ? [{ phone: formattedPhone }] : []), ...(data.email ? [{ email: data.email.toLowerCase() }] : [])],
     });
 
@@ -1510,18 +1524,20 @@ const crmService = {
         source: data.source || 'Autogate',
         lead_prospect_id: data.lead_prospect_id || null,
         notes: data.notes || `Direct intake lead (${data.vehicle || 'BYD Range'})`,
-      }).catch(() => null);
+      });
     }
+    if (!customer) throw Object.assign(new Error('Could not create the CRM customer.'), { statusCode: 500 });
 
     // SLA Clock (default 15 minutes during trading hours, §5.3)
     const now = new Date();
     const governance = await require('./crmLive').settings(deliveryConn.db);
     const slaExpiresAt = data.sla_expires_at ? new Date(data.sla_expires_at) : new Date(now.getTime() + governance.effective.slaTimeoutMinutes * 60000);
 
-    const count = await allocColl.countDocuments();
-    const allocationId = 'ALC-' + (400 + count + 1);
+    const allocationKey = data.lead_prospect_id ? `${site}:${data.lead_prospect_id}` : data.event_id || crypto.randomUUID();
+    const allocationId = 'ALC-' + crypto.createHash('sha256').update(allocationKey).digest('hex').slice(0, 24);
 
     const allocDoc = {
+      _id: allocationId,
       allocation_id: allocationId,
       event_id: data.event_id || null,
       lead_prospect_id: data.lead_prospect_id || `LP-${crypto.randomUUID().slice(0, 8).toUpperCase()}`,
@@ -1535,7 +1551,10 @@ const crmService = {
       ai_score: Number.isFinite(Number(data.score ?? data.ai_score)) && (data.score ?? data.ai_score) != null ? Number(data.score ?? data.ai_score) : null,
       last_sms_summary: data.last_sms_summary || data.summary || '',
       appointment_when: data.appointment || data.appointment_when || null,
-      assigned_to_name: data.assigned_to || data.consultant || '',
+      assigned_to_name: person.name,
+      assigned_to_user_id: String(person._id),
+      assigned_to_email: person.email,
+      projection_state: 'pending',
       allocated_at: now,
       sla_expires_at: slaExpiresAt,
       status: 'pending',
@@ -1543,7 +1562,13 @@ const crmService = {
       updatedAt: now,
     };
 
-    await allocColl.insertOne(allocDoc);
+    try { await allocColl.insertOne(allocDoc); }
+    catch (error) {
+      if (error.code !== 11000) throw error;
+      const existing = await allocColl.findOne({ allocation_id: allocationId });
+      if (!existing) throw error;
+      return { ...await projection.project(leadConn.db, deliveryConn.db, existing, data, person), duplicate: true };
+    }
 
     // Ensure matching opportunity exists in New / Allocated stage
     if (customer?.customer_id) {
@@ -1582,64 +1607,10 @@ const crmService = {
       });
     }
 
-    // Direct Lead Centre database update (Allocate in Lead Centre)
-    if (allocDoc.phone || data.lead_prospect_id) {
-      try {
-        const leadQuery = data.lead_prospect_id
-          ? { $or: [{ _id: data.lead_prospect_id }, { phone: { $regex: allocDoc.phone.slice(-8), $options: 'i' } }] }
-          : { phone: { $regex: allocDoc.phone.slice(-8), $options: 'i' } };
-        const existingLead = await leadConn.db.collection('leads').findOne(leadQuery);
-        if (existingLead) {
-          await leadConn.db.collection('leads').updateOne(
-            { _id: existingLead._id },
-            {
-              $set: {
-                assignedTo: allocDoc.assigned_to_name,
-                allocatedPersonFullName: allocDoc.assigned_to_name,
-                dealer: allocDoc.site,
-                stage: 'QUALIFIED',
-                lastTouch: `Allocated to ${allocDoc.assigned_to_name} (15m SLA)`,
-                lastActivityAt: now,
-                updatedAt: now,
-              },
-            }
-          );
-          await leadConn.db.collection('audittrails').insertOne({
-            message: `Lead allocated to ${allocDoc.assigned_to_name} with 15-min SLA clock`,
-            actor: 'Lead Intake Engine',
-            leadId: existingLead._id,
-            action: 'allocate',
-            createdAt: now,
-          }).catch(() => {});
-        } else {
-          await leadConn.db.collection('leads').insertOne({
-            name: allocDoc.prospect_name,
-            phone: allocDoc.phone,
-            email: allocDoc.email,
-            vehicle: data.vehicle || '',
-            source: data.source || 'Autogate',
-            platform: data.source === 'Autogate' ? 'autogate' : 'manual',
-            stage: 'QUALIFIED',
-            status: 'Assigned',
-            score: data.score ?? null,
-            dealer: allocDoc.site,
-            assignedTo: allocDoc.assigned_to_name,
-            allocatedPersonFullName: allocDoc.assigned_to_name,
-            lastTouch: `Allocated to ${allocDoc.assigned_to_name} · Just now`,
-            lastActivityAt: now,
-            notes: allocDoc.notes,
-            isArchived: false,
-            createdAt: now,
-            updatedAt: now,
-          });
-        }
-      } catch (_) {}
-    }
-
-    return allocDoc;
+    return projection.project(leadConn.db, deliveryConn.db, allocDoc, data, person);
   },
 
-  async acceptAllocation(allocId, consultantName = '') {
+  async acceptAllocation(allocId, consultantName = '', actor) {
     await ensureDbConnected();
     const allocColl = deliveryConn.db.collection('allocations');
     const custColl = deliveryConn.db.collection('customers');
@@ -1651,6 +1622,11 @@ const crmService = {
       $or: [{ allocation_id: allocId }, { _id: allocId }],
     });
     if (!alloc) throw new Error('Allocation not found');
+    const projection = require('./leadAllocation');
+    const { person } = await projection.assignee(deliveryConn.db, { site: alloc.site, assigned_to: alloc.assigned_to_user_id || alloc.assigned_to_email || alloc.assigned_to_name });
+    if (actor && !require('./salesFloorPolicy').isManager(actor) && actor.id !== String(person._id))
+      throw Object.assign(new Error('Only the assigned salesperson or a manager can accept this allocation.'), { statusCode: 403 });
+    consultantName = person.name;
 
     await allocColl.updateOne(
       { _id: alloc._id },
@@ -1692,31 +1668,9 @@ const crmService = {
         updatedAt: now,
       });
 
-      // Direct Lead Centre database update
-      if (alloc.phone) {
-        try {
-          await leadConn.db.collection('leads').updateMany(
-            { phone: { $regex: alloc.phone.slice(-8), $options: 'i' } },
-            {
-              $set: {
-                assignedTo: consultantName,
-                allocatedPersonFullName: consultantName,
-                stage: 'QUALIFIED',
-                lastTouch: `Allocation accepted by ${consultantName}`,
-                lastActivityAt: now,
-                updatedAt: now,
-              },
-            }
-          );
-          await leadConn.db.collection('audittrails').insertOne({
-            message: `Allocation SLA accepted by ${consultantName}`,
-            actor: consultantName,
-            action: 'accept_allocation',
-            createdAt: now,
-          }).catch(() => {});
-        } catch (_) {}
-      }
     }
+
+    await projection.project(leadConn.db, deliveryConn.db, alloc, { lead_prospect_id: alloc.lead_prospect_id }, person);
 
     return { ...alloc, status: 'accepted', assigned_to_name: consultantName, accepted_at: now };
   },
@@ -1733,6 +1687,9 @@ const crmService = {
       $or: [{ allocation_id: allocId }, { _id: allocId }],
     });
     if (!alloc) throw new Error('Allocation not found');
+    const projection = require('./leadAllocation');
+    const { person } = await projection.assignee(deliveryConn.db, { site: alloc.site, assigned_to: newConsultant });
+    newConsultant = person.name;
 
     const previousConsultant = alloc.assigned_to_name;
     await allocColl.updateOne(
@@ -1775,30 +1732,9 @@ const crmService = {
         updatedAt: now,
       });
 
-      // Direct Lead Centre database update
-      if (alloc.phone) {
-        try {
-          await leadConn.db.collection('leads').updateMany(
-            { phone: { $regex: alloc.phone.slice(-8), $options: 'i' } },
-            {
-              $set: {
-                assignedTo: newConsultant,
-                allocatedPersonFullName: newConsultant,
-                lastTouch: `Reassigned to ${newConsultant}`,
-                lastActivityAt: now,
-                updatedAt: now,
-              },
-            }
-          );
-          await leadConn.db.collection('audittrails').insertOne({
-            message: `Lead reassigned from ${previousConsultant} to ${newConsultant}`,
-            actor: 'Floor Manager',
-            action: 'reassign',
-            createdAt: now,
-          }).catch(() => {});
-        } catch (_) {}
-      }
     }
+
+    await projection.project(leadConn.db, deliveryConn.db, alloc, { lead_prospect_id: alloc.lead_prospect_id }, person);
 
     return { ...alloc, assigned_to_name: newConsultant, previous_assignee: previousConsultant, reassigned_at: now };
   },
