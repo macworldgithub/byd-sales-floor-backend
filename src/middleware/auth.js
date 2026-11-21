@@ -50,6 +50,9 @@ const authenticate = async (req, res, next) => {
     const locked_site = floorAdminRead ? '' : resolveSite(account, requestedSite);
     req.user = { ...decoded, id: String(account._id), email: account.email, name: account.name, role: normalizeRole(account.role), site: account.site,
       locked_site, network_lookup: !locked_site && !!account.network_lookup, platform, allowed_sites: account.allowed_sites, all_sites: account.all_sites, platform_access: account.platform_access };
+    if (req.user.role === 'contractor' && !/^\/api\/(?:auth|mobile)(?:\/|$)/.test(req.originalUrl || req.baseUrl || '')) {
+      return res.status(403).json({ success: false, message: 'Contractors can access only their assigned delivery work.' });
+    }
     if (!floorAdminRead && Array.isArray(account.allowed_sites) && !account.all_sites && req.originalUrl) {
       const { deliveryConn, leadConn } = require('../db');
       await require('../services/resourceSiteAccess').guardResourceSites(req, { panel: deliveryConn.db, lead: leadConn.db });

@@ -2,6 +2,8 @@
 
 The existing BYD databases and integrations now serve the unified Sales Floor web workspace as well as the previous clients. A Sales Floor session can use the existing CRM workflows without a second platform login. Saved account roles, site grants and resource guards continue to apply.
 
+Contractor accounts can use authentication and the existing mobile delivery operations, whose scope limits them to assigned work. They cannot use the general CRM, leads, client list or messaging routes.
+
 ## Allocation correctness
 
 `leadAllocation.js` resolves an active salesperson with Sales Floor access at the enquiry's dealership. It converts BSON references correctly, updates the exact original enquiry, stores the salesperson's email/account ID and links the customer and opportunity. It uses schema-compatible lead stages and preserves booked/advanced stages.

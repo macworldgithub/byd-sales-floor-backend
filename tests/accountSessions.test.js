@@ -40,6 +40,15 @@ test('revoked platform grants reject an otherwise valid session', async () => {
   const result = await authorize({ ...account(), platform_access: ['delivery_centre'] });
   assert.equal(result.status, 403);
 });
+test('unified Sales Floor sessions use CRM workflows while contractors remain limited to delivery operations', async () => {
+  const floor = { ...account(), platform_access: ['sales_floor'], allowed_sites: undefined };
+  assert.equal((await authorize(floor, { platform: 'sales_floor' })).accepted, true);
+  const contractor = { ...floor, role: 'contractor' };
+  for (const baseUrl of ['/api/crm', '/api/floor', '/api/leads', '/api/clients', '/api/messages']) {
+    assert.equal((await authorize(contractor, { platform: 'sales_floor', baseUrl })).status, 403);
+  }
+  assert.equal((await authorize(contractor, { platform: 'sales_floor', baseUrl: '/api/mobile' })).accepted, true);
+});
 test('requests can select an assigned site but cannot select an unassigned site', async () => {
   const valid = await authorize(account(), { site: 'Nunawading' });
   assert.equal(valid.req.user.locked_site, 'BYD Nunawading');
