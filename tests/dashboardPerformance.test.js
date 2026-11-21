@@ -10,13 +10,13 @@ test('summary counts all records beyond the old caps without including other sit
   const now = new Date(), site = manager.site;
   const leads = Array.from({ length: 1105 }, (_, i) => ({ _id: String(i), dealer: site, stage: 'NEW ENQUIRIES', createdAt: now, assignedTo: 'sales@example.invalid' }));
   leads.push({ _id: 'archived', dealer: site, isArchived: true }, { _id: 'other', dealer: 'BYD Nunawading' });
-  const lead = database({ leads, appointments: Array.from({length: 205}, () => ({ site, createdAt: now, status: 'Confirmed' })),
+  const lead = database({ leads, appointments: Array.from({length: 205}, () => ({ site, createdAt: now, when: now, status: 'Confirmed' })),
     deals: [{site,leadId:'1104',contractSignedAt:now}] });
-  const panel = database({ floor_tasks: Array.from({length:105}, () => ({site,status:'open',dueAt:new Date(now - 3600000)})),
+  const panel = database({ floor_tasks: Array.from({length:105}, (_,i) => ({site,leadId:String(i),status:'open',dueAt:new Date(now - 3600000)})),
     timelineevents: Array.from({length:205}, () => ({site,type:'Video sent',createdAt:now})) });
   const result = await new SalesFloorOperations(lead,panel).summary({period:'today'},manager);
-  assert.equal(result.activeLeads,1105);
-  assert.equal(result.unactionedLeads,1105);
+  assert.equal(result.activeLeads,1104);
+  assert.equal(result.unactionedLeads,1104);
   assert.equal(result.appointmentsBooked,205);
   assert.equal(result.videosSent,205);
   assert.equal(result.overdueSla,105);
@@ -37,20 +37,20 @@ test('dashboard aggregates preserve mixed date formats, ownership, traffic thres
   const db=database({leads:rows}), config=p.DEFAULTS, deals=[{leadId:'one',contractSignedAt:now}];
   const filter=p.scope(manager,{},['dealer','site']);
   const result=await metrics.summary(db.collection('leads'),filter,deals,config,{from,to:now},now);
-  assert.equal(result.activeLeads,1);
-  assert.equal(result.created,3);
+  assert.equal(result.activeLeads,0);
+  assert.equal(result.created,2);
   assert.equal(result.converted,1);
   assert.equal(result.overdueLeads,1);
   const [alex]=await metrics.pulse(db.collection('leads'),filter,deals,config,now);
-  assert.equal(alex.total,5);
+  assert.equal(alex.total,4);
   assert.equal(alex.sold,1);
-  assert.equal(alex.activeLeads,3);
-  assert.equal(alex.overdueSla,2);
+  assert.equal(alex.activeLeads,2);
+  assert.equal(alex.overdueSla,1);
   assert.equal(alex.maxFollowupHours,73);
   assert.equal(alex.trafficLight,'red');
-  assert.equal(alex.conversionRate,20);
-  assert.deepEqual(alex.flaggedLeads.map(row=>row.id),['one','two']);
-  assert.equal(alex.flaggedLeads[0].age,'25h');
+  assert.equal(alex.conversionRate,25);
+  assert.deepEqual(alex.flaggedLeads.map(row=>row.id),['two']);
+  assert.equal(alex.flaggedLeads[0].age,'73h');
   await assert.rejects(new SalesFloorOperations(db,database()).pulse({}, {...manager,role:'sales_consultant'}), {statusCode:403});
 });
 
@@ -101,4 +101,67 @@ test('invalid PULSE pages are rejected before any database read', async () => {
   for(const query of [{page:0},{page:-1},{page:1.5},{limit:0},{limit:51},{followupPage:'bad'},{followupLimit:100},{page:Number.MAX_SAFE_INTEGER,limit:50}]) {
     await assert.rejects(service.pulse(query,manager),{statusCode:400});
   }
+});
+
+test('all overview cards reconcile signed sales, recorded wins, scheduled appointments, videos and current-month targets',async()=>{
+  const now=new Date('2026-11-21T10:00:00Z'),site=manager.site;
+  const leads=[
+    {_id:'open',stage:'NEW ENQUIRIES'}, {_id:'sold',stage:'DELIVERED',status:'sold'}, {_id:'lost',stage:'LOST'},
+    {_id:'signed-stale',stage:'NEW ENQUIRIES'}, {_id:'duplicate',stage:'DELIVERED',isArchived:true},
+  ].map(row=>({...row,dealer:site,allocatedPersonFullName:'Alex',createdAt:now}));
+  const lead=database({leads,deals:[{_id:'native',site,leadId:'signed-stale',contractSignedAt:now}],appointments:[
+    {site,when:now,status:'Confirmed',createdAt:new Date('2026-09-01')},
+    {site,when:'2026-11-21T22:00:00',status:'Confirmed'},
+    {site,when:new Date('2026-09-01'),createdAt:now,status:'Confirmed'},
+    {site,when:now,status:'Cancelled'},
+  ]});
+  const panel=database({customers:[{site,customer_id:'C',lead_prospect_id:'sold'}],opportunities:[
+    {_id:'opp',site,opportunity_id:'O',customer_id:'C',stage:'Written / Sold',sold_at:now,delivery_client_id:'delivery',sales_log_id:'S'}],
+    saleslogentries:[{_id:'log',site,opportunity_id:'O',sales_log_id:'S',status:'written',deal_date:'2026-11-21'}],clients:[
+      {_id:'delivery',site_location:site,stage:'Scheduled',order_date:'2026-11-21'},
+      {_id:'unlinked',site_location:site,stage:'Scheduled',order_date:'2026-11-21'},
+    ],timelineevents:[
+      {site,type:'Video sent',occurred_at:now,createdAt:new Date('2026-09-01')},
+      {site,type:'Video sent',createdAt:now.toISOString()},
+      {site,type:'Video sent',occurred_at:new Date('2026-09-01'),createdAt:now},
+      {site,type:'SMS sent',createdAt:now},
+    ],crmtargets:[{site,period:'2026-11',consultant:'Alex',targetUnits:0}],targets:[
+      {site,month:'2026-11',user_name:'Alex',unit_target:12},{site,month:'2026-11',user_name:'Pat',unit_target:20},
+      {site,month:'2026-09',user_name:'Old',unit_target:999},
+    ]});
+  const service=new SalesFloorOperations(lead,panel),summary=await service.summary({period:'today'},manager,now);
+  assert.equal(summary.activeLeads,1);assert.equal(summary.unactionedLeads,1);
+  assert.equal(summary.dealsCompleted,3);assert.equal(summary.conversionRate,50);
+  assert.equal(summary.appointmentsBooked,2);assert.equal(summary.videosSent,2);assert.equal(summary.monthlyTarget,20);
+  const pulse=await service.pulse({page:1,limit:10},manager,now);
+  assert.equal(pulse.consultants[0].total,4);assert.equal(pulse.consultants[0].sold,2);
+  assert.equal(pulse.consultants[0].conversionRate,50);assert.equal(pulse.consultants[0].activeLeads,1);
+});
+
+test('overdue is a distinct current lead backlog, respects future promises, and does not count tasks on closed or archived leads',async()=>{
+  const now=new Date('2026-11-21T10:00:00Z'),old=new Date(now-100*3600000),site=manager.site;
+  const leads=[
+    {_id:'promised',createdAt:old,nextActionAt:new Date(now.getTime()+86400000)},
+    {_id:'duplicate-tasks',createdAt:old},{_id:'fresh-task',createdAt:now},
+    {_id:'archived',createdAt:old,isArchived:true},{_id:'lost',createdAt:old,stage:'LOST'},
+    {_id:'received-only',leadDate:old},{_id:'recent-contact',createdAt:old,lastContactAt:old,lastContact:new Date(now-3600000).toISOString()},
+    {_id:'fresh',createdAt:now,lastContactAt:'invalid'},
+    {_id:'promised-overdue',createdAt:now,lastContactAt:new Date(now-60000),nextActionAt:new Date(now-1000)},
+    {_id:'signed',createdAt:old},
+  ].map(row=>({dealer:site,stage:'NEW ENQUIRIES',allocatedPersonFullName:'Alex',...row}));
+  const tasks=['duplicate-tasks','duplicate-tasks','fresh-task','archived','lost','signed'].map(leadId=>({site,leadId,status:'open',dueAt:new Date(now-1000)}));
+  const service=new SalesFloorOperations(database({leads,deals:[{site,leadId:'signed',contractSignedAt:now}]}),database({floor_tasks:tasks}));
+  const summary=await service.summary({period:'today'},manager,now);
+  assert.equal(summary.overdueTasks,6);assert.equal(summary.overdueSla,4);
+  const pulse=await service.pulse({page:1,limit:10,followupPage:1,followupLimit:10},manager,now);
+  assert.equal(pulse.consultants[0].overdueSla,4);assert.equal(pulse.followupPagination.total,4);
+  assert.deepEqual(pulse.followups.map(row=>row.id).sort(),['duplicate-tasks','fresh-task','promised-overdue','received-only']);
+});
+
+test('a future agreed follow-up does not turn a consultant red solely because the previous contact was old',async()=>{
+  const now=new Date('2026-11-21T10:00:00Z');
+  const service=new SalesFloorOperations(database({leads:[{_id:'future',dealer:manager.site,createdAt:new Date(now-100*3600000),nextActionAt:new Date(now.getTime()+86400000)}]}),
+    database({floor_site_settings:[{_id:'fairfield',value:{conversionAmber:0,conversionGreen:0}}]}));
+  const result=await service.pulse({page:1},manager,now);
+  assert.equal(result.consultants[0].trafficLight,'green');assert.equal(result.followupPagination.total,0);
 });

@@ -3,40 +3,43 @@ const p = require('./salesFloorPolicy');
 const { fail, siteKey } = require('./accountAccess');
 const { ObjectId } = require('mongoose').mongo;
 const metrics = require('./dashboardMetrics');
+const writtenSales = require('./writtenSales');
 const timed = (row, from, to, key = 'createdAt') => row[key] && new Date(row[key]) >= from && new Date(row[key]) <= to;
 
 class SalesFloorOperations extends SalesFloorMobile {
-  async summary(query, user) {
-    const bounds = p.period(query.period), site = user.locked_site || query.site || user.site;
-    const [appointments, deals, events, targets, tasks, config] = await Promise.all([
+  async summary(query, user, now = new Date()) {
+    const bounds = p.period(query.period, now), site = user.locked_site || query.site || user.site;
+    const [appointments, sales, events, target, tasks, config] = await Promise.all([
       metrics.appointmentsBooked(this.lead.collection('appointments'), this.filter(user, query, 'appointments'), bounds),
-      this.lead.collection('deals').find(this.filter(user, query, 'deals'), { projection: { leadId: 1, contractSignedAt: 1 } }).toArray(),
-      this.panel.collection('timelineevents').countDocuments(and(p.scope(user, query, ['site']), { type: 'Video sent', createdAt: { $gte: bounds.from, $lte: bounds.to } })),
-      this.panel.collection('crmtargets').find(and(p.scope(user, query, ['site']), { period: bounds.month }), { projection: { targetUnits: 1 } }).toArray(),
-      this.panel.collection('floor_tasks').find(and(p.scope(user, query, ['site']), { status: 'open' }), { projection: { dueAt: 1 } }).toArray(),
+      writtenSales.read(this.lead, this.panel, query, user, {bounds}),
+      metrics.videosSent(this.panel.collection('timelineevents'),p.scope(user,query,['site']),bounds),
+      writtenSales.monthlyTarget(this.panel, query, user, bounds.month),
+      this.panel.collection('floor_tasks').find(and(p.scope(user, query, ['site']), { status: 'open' }), { projection: { dueAt: 1, leadId: 1 } }).toArray(),
       this.config(site),
     ]);
-    const counts = await metrics.summary(this.lead.collection('leads'), this.filter(user, query), deals, config, bounds);
-    const sold = deals.filter(row => timed(row, bounds.from, bounds.to, 'contractSignedAt'));
+    const overdueTasks = tasks.filter(row => row.dueAt && Number.isFinite(new Date(row.dueAt).getTime()) && new Date(row.dueAt) <= bounds.to);
+    const evidence = { ...sales, overdueLeadIds: [...new Set(overdueTasks.map(row => String(row.leadId || '')).filter(Boolean))] };
+    const counts = await metrics.summary(this.lead.collection('leads'), this.filter(user, query), evidence, config, bounds, now);
+    const sold = sales.sales.filter(row => timed(row, bounds.from, bounds.to, 'contractSignedAt'));
     return { activeLeads: counts.activeLeads, unactionedLeads: counts.unactionedLeads, actionedLeads: counts.activeLeads - counts.unactionedLeads,
       appointmentsBooked: appointments,
-      overdueSla: tasks.filter(row => new Date(row.dueAt) < bounds.to).length + counts.overdueLeads,
+      overdueSla: counts.overdueLeads, overdueTasks: overdueTasks.length,
       dealsCompleted: sold.length, conversionRate: counts.created ? Math.round(counts.converted / counts.created * 1000) / 10 : null,
       videosSent: events,
-      monthlyTarget: targets.length ? targets.reduce((total, row) => total + Number(row.targetUnits || 0), 0) : null,
-      period: query.period || 'today', site, updatedAt: new Date() };
+      monthlyTarget: target, salesDataQuality: {...sales.quality,unlinkedSales:sold.filter(row=>!row.leadIds.length).length},
+      period: query.period || 'today', periodBounds: { from: bounds.from, to: bounds.to, timezone: 'Australia/Melbourne' }, site, updatedAt: now };
   }
   async reports(query, user) {
     if (!p.isManager(user)) fail(403, 'Management access required.');
     const bounds = p.period(query.period || 'mtd');
-    const [deals, traffic, events] = await Promise.all([
-      this.lead.collection('deals').find(this.filter(user, query, 'deals'), { projection: { leadId: 1, contractSignedAt: 1, site: 1, 'vehicle.model': 1 } }).toArray(),
+    const [sales, traffic, events] = await Promise.all([
+      writtenSales.read(this.lead,this.panel,query,user,{bounds}),
       this.panel.collection('floor_traffic').find(p.scope(user, query, ['site']), { projection: { createdAt: 1, captured: 1, site: 1 } }).toArray(),
-      this.panel.collection('timelineevents').countDocuments(and(p.scope(user, query, ['site']), { type: 'Video sent', createdAt: { $gte: bounds.from, $lte: bounds.to } })),
+      metrics.videosSent(this.panel.collection('timelineevents'),p.scope(user,query,['site']),bounds),
     ]);
     const within = value => value && new Date(value) >= bounds.from && new Date(value) <= bounds.to;
-    const sold = deals.filter(row => within(row.contractSignedAt)), visits = traffic.filter(row => within(row.createdAt));
-    const leads = await metrics.reportLeads(this.lead.collection('leads'), this.filter(user, query), sold, bounds);
+    const sold = sales.sales.filter(row => within(row.contractSignedAt)), visits = traffic.filter(row => within(row.createdAt));
+    const leads = await metrics.reportLeads(this.lead.collection('leads'), this.filter(user, query), sales, bounds);
     const created = leads.reduce((total,row) => total + row.created,0), converted = leads.reduce((total,row) => total + row.converted,0);
     const sites = [...new Set([...leads.map(row => row._id), ...sold.map(row => row.site), ...visits.map(row => row.site)].filter(Boolean))];
     return { dailyLeads: created, walkIns: visits.length, videosSent: events,
@@ -45,18 +48,20 @@ class SalesFloorOperations extends SalesFloorMobile {
       modelMix: Object.entries(sold.reduce((acc, deal) => { const model = deal.vehicle?.model || 'Unknown'; acc[model] = (acc[model] || 0) + 1; return acc; }, {})).map(([model, units]) => ({ model, units })),
       sites: sites.map(site => ({ site, leads: leads.filter(row => siteKey(row._id) === siteKey(site)).reduce((total,row) => total + row.created,0), sold: sold.filter(row => siteKey(row.site) === siteKey(site)).length })) };
   }
-  async pulse(query, user) {
+  async pulse(query, user, now = new Date()) {
     if (!p.isManager(user)) fail(403, 'Management access required.');
     const paginated = ['page', 'limit', 'followupPage', 'followupLimit'].some(key => Object.hasOwn(query, key));
     if (paginated) metrics.pulsePages(query);
-    const [deals, config] = await Promise.all([
-      this.lead.collection('deals').find(this.filter(user, query, 'deals'), { projection: { leadId: 1, contractSignedAt: 1 } }).toArray(),
+    const [sales, config, tasks] = await Promise.all([
+      writtenSales.read(this.lead,this.panel,query,user,{linkedOnly:true}),
       this.config(user.locked_site || query.site || user.site),
+      this.panel.collection('floor_tasks').find(and(p.scope(user,query,['site']), {status:'open'}), {projection:{leadId:1,dueAt:1}}).toArray(),
     ]);
+    const deals = { ...sales, overdueLeadIds: [...new Set(tasks.filter(row => row.dueAt && Number.isFinite(new Date(row.dueAt).getTime()) && new Date(row.dueAt) <= now).map(row => String(row.leadId || '')).filter(Boolean))] };
     const collection = this.lead.collection('leads'), filter = this.filter(user, query);
-    const data = paginated ? await metrics.pagedPulse(collection, filter, deals, config, query)
-      : { consultants: await metrics.pulse(collection, filter, deals, config) };
-    return { ...data, config, updatedAt: new Date() };
+    const data = paginated ? await metrics.pagedPulse(collection, filter, deals, config, query, now)
+      : { consultants: await metrics.pulse(collection, filter, deals, config, now) };
+    return { ...data, config, updatedAt: now };
   }
   async ingestMessage(lead, text, messageId, at = new Date()) {
     const config = await this.config(lead.dealer || lead.site);

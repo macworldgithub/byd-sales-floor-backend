@@ -10,7 +10,8 @@ const literal = value => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const exact = value => new RegExp(`^${literal(value)}$`, 'i');
 const stages = { Imported: 'NEW ENQUIRIES', Engaged: 'IN FOLLOW-UP', Qualified: 'AI QUALIFYING', Committed: 'COMMITTED',
   Delivered: 'DELIVERED', Lost: 'LOST' };
-const active = row => !['DELIVERED', 'LOST', 'OPTED OUT'].includes(row.stage) && !row.isArchived;
+const active = row => !['delivered','lost','opted out','written / sold','in delivery','delivered / won','lost / parked'].includes(String(row.stage||'').trim().toLowerCase())
+  && !['sold','signed','lost','opted out','cancelled','canceled','won','delivered'].includes(String(row.status||'').trim().toLowerCase()) && !row.isArchived;
 function stage(value) {
   const result = stages[value] || value || 'NEW ENQUIRIES';
   if (![...Object.values(stages), 'TEST DRIVE BOOKED', 'OPTED OUT'].includes(result)) fail(400, 'Select a valid lead stage.');

@@ -26,7 +26,8 @@ class SalesFloorMobile {
     return { identityKey, release: () => identities.updateOne({ _id: identityKey, lockOwner }, { $unset: { lockedUntil: '', lockOwner: '' } }) };
   }
   filter(user, query = {}, name = 'leads') {
-    const fields = name === 'inventories' ? ['location', 'site', 'yard'] : name === 'clients' ? ['site_location', 'site'] : ['dealer', 'site', 'dealership'];
+    const fields = name === 'inventories' ? ['location', 'site', 'yard'] : name === 'clients' ? ['site_location', 'site']
+      : name === 'appointments' ? ['site','dealership','dealer','location'] : ['dealer', 'site', 'dealership'];
     const subject = name === 'inventories' ? { ...user, role: 'manager' } : user;
     return p.scope(subject, query, fields);
   }

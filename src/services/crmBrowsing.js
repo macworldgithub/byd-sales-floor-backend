@@ -104,10 +104,11 @@ async function options(db, collection, scope, fields) {
   });
 }
 
-async function leads(db, query = {}, user = {}) {
+async function leads(db, query = {}, user = {}, extraScope = {}) {
   paging(query, 0);
   const collection = db.collection('leads');
   const scope = and([
+    extraScope,
     siteScope(query, user, ['dealer', 'site', 'dealerName']),
     query.archived === 'all'
       ? {}
@@ -421,7 +422,7 @@ function scheduled(value, time) {
 }
 const fallback = (...values) =>
   values.reduceRight((next, value) => ({ $ifNull: [value, next] }), null);
-function eventPipelines(databases, query, user) {
+function eventPipelines(databases, query, user, extraScope = () => ({})) {
   const from = dayStart(query.from),
     to = dayStart(query.to);
   if (to <= from || to - from > 94 * 86400000)
@@ -436,7 +437,7 @@ function eventPipelines(databases, query, user) {
       db: databases.lead,
       collection: 'appointments',
       source: 'appointment',
-      siteFields: ['site', 'dealership', 'location'],
+      siteFields: ['site', 'dealership', 'dealer', 'location'],
       project: {
         stamp: scheduled(fallback('$testDriveDate', '$when'), '09:00'),
         type: { $ifNull: ['$floorCategory', {
@@ -517,7 +518,7 @@ function eventPipelines(databases, query, user) {
   ];
   return definitions.map((definition) => {
     const base = [
-      { $match: siteScope(query, user, definition.siteFields) },
+      { $match: { $and: [siteScope(query, user, definition.siteFields), extraScope(definition.siteFields)] } },
       { $project: definition.project },
       { $match: { stamp: { $gte: from, $lt: to } } },
     ];
@@ -599,10 +600,10 @@ function calendarEvent(row, source) {
         : undefined,
   };
 }
-async function calendar(databases, query = {}, user = {}) {
+async function calendar(databases, query = {}, user = {}, extraScope) {
   paging(query, 0);
   const firstPage = Number(query.page || 1) === 1;
-  const sources = eventPipelines(databases, query, user);
+  const sources = eventPipelines(databases, query, user, extraScope);
   const stats = await Promise.all(
     sources.map(async (source) => {
       const [result] = await source.db
@@ -611,6 +612,10 @@ async function calendar(databases, query = {}, user = {}) {
           ...source.base,
           {
             $facet: {
+              ...(source.source === 'appointment' ? { scheduled: [
+                { $match: { $and: [source.filtered[source.filtered.length - 1].$match, { status: { $nin: ['Cancelled','No Show'] } }] } },
+                { $count: 'count' },
+              ] } : {}),
               ...(firstPage ? { rows: [
                 { $match: source.filtered[source.filtered.length - 1].$match },
                 { $sort: { stamp: 1, _id: 1 } }, { $limit: Number(query.limit || 25) },
@@ -642,6 +647,7 @@ async function calendar(databases, query = {}, user = {}) {
         filters: result?.filters[0] || {},
         next: result?.next?.[0] ? calendarEvent(result.next[0], source.source) : null,
         rows: result?.rows,
+        scheduled: result?.scheduled?.[0]?.count || 0,
       };
     })
   );
@@ -693,6 +699,7 @@ async function calendar(databases, query = {}, user = {}) {
         yards: values('yards'),
       },
       sourceCounts: Object.fromEntries(sources.map((source, index) => [source.source, stats[index].total])),
+      scheduledAppointments: stats.reduce((sum,stat,index)=>sum+(sources[index].source==='appointment'?stat.scheduled:0),0),
       nextEvent: stats.map(stat => stat.next).filter(Boolean).sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id))[0] || null,
       timezone: 'Australia/Melbourne',
     },
@@ -707,4 +714,5 @@ module.exports = {
   dayStart,
   calendarEvent,
   eventPipelines,
+  scheduled,
 };

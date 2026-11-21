@@ -3,34 +3,7 @@ const assert = require('node:assert/strict');
 const floor = require('../src/services/floorBrowsing');
 const browse = require('../src/services/crmBrowsing');
 const get = (doc, name) => name.split('.').reduce((value, key) => value?.[key], doc);
-function expression(doc, value) {
-  if (typeof value === 'string' && value.startsWith('$')) return get(doc, value.slice(1));
-  if (value === null || typeof value !== 'object' || value instanceof Date || value instanceof RegExp) return value;
-  if (Array.isArray(value)) return value.map(item => expression(doc, item));
-  const [key, arg] = Object.entries(value)[0];
-  const args = () => expression(doc, arg);
-  if (key === '$ifNull') { const [a, b] = args(); return a ?? b; }
-  if (key === '$ne') { const [a, b] = args(); return a !== b; }
-  if (key === '$gte') { const [a, b] = args(); return a >= b; }
-  if (key === '$lt') { const [a, b] = args(); return a < b; }
-  if (key === '$and') return args().every(Boolean);
-  if (key === '$cond') return expression(doc, expression(doc, arg[0]) ? arg[1] : arg[2]);
-  if (key === '$convert') { const v = expression(doc, arg.input); return arg.to === 'date' ? new Date(v) : String(v ?? ''); }
-  if (key === '$regexMatch') return arg.regex.test(expression(doc, arg.input));
-  throw Error('Unsupported test expression: ' + key);
-}
-function matches(doc, query) {
-  return Object.entries(query).every(([key, value]) => {
-    if (key === '$and') return value.every(part => matches(doc, part));
-    if (key === '$or') return value.some(part => matches(doc, part));
-    if (key === '$expr') return expression(doc, value);
-    const actual = get(doc, key);
-    if (value instanceof RegExp) return value.test(actual || '');
-    if (value && typeof value === 'object' && !(value instanceof Date)) return Object.entries(value).every(([op, expected]) =>
-      op === '$ne' ? actual !== expected : op === '$in' ? expected.includes(actual) : op === '$gte' ? actual >= expected : op === '$lte' ? actual <= expected : false);
-    return actual === value;
-  });
-}
+const { matches } = require('./helpers/floorMemory');
 const records = Array.from({ length: 105 }, (_, index) => ({ _id: String(index), name: index < 65 ? 'Nunawading lead' : 'Caroline lead',
   dealer: index < 65 ? 'BYD Nunawading' : 'BYD Caroline Springs', stage: 'NEW ENQUIRIES', source: index % 2 ? 'Web' : 'Walk-in',
   model: index % 2 ? 'SEAL' : 'ATTO 3', vehicle: index % 2 ? 'SEAL' : 'ATTO 3', score: index % 100,
@@ -99,4 +72,20 @@ test('calendar export uses real stable IDs, UTC instants and escaped, folded UTF
   assert.ok(content.includes('Customer\\, event\\; one\\nnext'));
   assert.ok(content.includes('STATUS:CANCELLED'));
   assert.ok(content.split('\r\n').every(line => Buffer.byteLength(line) <= 75));
+});
+
+test('all-site BYD browsing excludes other brands and Today attention excludes already closed enquiries',async t=>{
+  t.mock.method(browse,'calendar',async()=>({data:[],pagination:{total:0,page:1},meta:{sourceCounts:{appointment:5},scheduledAppointments:3,nextEvent:null}}));
+  const db=database([
+    {_id:'open',dealer:'BYD Fairfield',stage:'NEW ENQUIRIES',score:90},
+    {_id:'sold',dealer:'BYD Fairfield',stage:'DELIVERED',status:'sold',score:99},
+    {_id:'other-brand',dealer:'Denza Melbourne',stage:'NEW ENQUIRIES',score:99},
+  ]);
+  const user={role:'sales_manager',all_sites:true,site:'All Sites'};
+  const result=await floor.today({lead:db,panel:db},{},user);
+  assert.equal(result.data.stats.totalLeads,2);assert.equal(result.data.stats.needsMe,1);
+  assert.equal(result.data.stats.appointmentsToday,3);
+  assert.equal(result.data.leads[0]._id,'open');
+  const rows=await floor.leads({lead:db},{},{...user,role:'super_admin'});
+  assert.equal(rows.pagination.total,2);assert.ok(rows.data.every(row=>row.dealer.startsWith('BYD')));
 });

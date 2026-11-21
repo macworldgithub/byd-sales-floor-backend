@@ -19,6 +19,8 @@ if (!DELIVERY_URI) {
 }
 
 const connectionOptions = {
+  compressors: ['zlib'],
+  zlibCompressionLevel: 3,
   serverSelectionTimeoutMS: 15000,
   socketTimeoutMS: 45000,
   maxPoolSize: 10,

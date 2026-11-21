@@ -17,12 +17,29 @@ function expr(value, row, vars = {}) {
   if (value.$gte) { const [a,b] = value.$gte.map(evaluate); return a >= b; }
   if (value.$lte) { const [a,b] = value.$lte.map(evaluate); return a <= b; }
   if (value.$gt) { const [a,b] = value.$gt.map(evaluate); return a > b; }
+  if (value.$lt) { const [a,b] = value.$lt.map(evaluate); return a < b; }
+  if (value.$concat) return value.$concat.map(evaluate).join('');
+  if (value.$dateFromString) {
+    const stamp=evaluate(value.$dateFromString.dateString);
+    if(stamp==null)return null;
+    let instant=Date.parse(stamp+'Z');
+    if(!Number.isFinite(instant))return null;
+    if(value.$dateFromString.timezone){
+      const formatter=new Intl.DateTimeFormat('en-CA',{timeZone:value.$dateFromString.timezone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'});
+      for(let i=0;i<3;i++){
+        const parts=Object.fromEntries(formatter.formatToParts(new Date(instant)).map(p=>[p.type,p.value]));
+        const local=Date.parse(`${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}Z`);
+        const difference=Date.parse(stamp+'Z')-local;if(!difference)break;instant+=difference;
+      }
+    }
+    return new Date(instant);
+  }
   if (value.$toLower) return String(evaluate(value.$toLower)).toLowerCase();
   if (value.$trim) return String(evaluate(value.$trim.input)).trim();
   if (value.$in) { const [a,b] = value.$in.map(evaluate); return b.some(item => same(a,item)); }
   if (value.$subtract) { const [a,b] = value.$subtract.map(evaluate); return a == null || b == null ? null : a - b; }
   if (value.$divide) { const [a,b] = value.$divide.map(evaluate); return a == null || b == null ? null : a / b; }
-  if (value.$max) return Math.max(...value.$max.map(evaluate));
+  if (value.$max) { const items=value.$max.map(evaluate).filter(item=>item!=null);return items.length?items.reduce((a,b)=>a>b?a:b):null; }
   if (value.$toString) { const item = evaluate(value.$toString); return item == null ? null : String(item); }
   if (value.$ifNull) return evaluate(value.$ifNull[0]) ?? evaluate(value.$ifNull[1]);
   if (value.$convert) {

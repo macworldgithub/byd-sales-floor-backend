@@ -1,11 +1,14 @@
 const browse = require('./crmBrowsing');
 const { fail } = require('./accountAccess');
+const { SITES } = require('./accountAccess');
+const policy = require('./salesFloorPolicy');
+const bydScope = fields => ({ $or: SITES.filter(site=>site.startsWith('BYD')).map(site=>browse.siteScope({site},{},fields)) });
 const isAdmin = user => ['super_admin', 'admin', 'site_admin'].includes(user?.role);
 const day = (now = new Date()) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Australia/Melbourne', year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
 const addDays = (value, count) => new Date(Date.parse(`${value}T12:00:00Z`) + count * 86400000).toISOString().slice(0, 10);
 function accountScope(user) {
   if (!user) fail(401, 'Authentication required.');
-  if (isAdmin(user)) return { ...user, locked_site: '' };
+  if (isAdmin(user) || (user.all_sites && policy.isManager(user))) return { ...user, locked_site: '' };
   const site = user.locked_site || user.site || user.allowed_sites?.[0];
   if (!site || /^all(?:\s|$)/i.test(site)) fail(403, 'A Sales Floor site must be assigned to this account.');
   return { ...user, locked_site: site };
@@ -15,26 +18,26 @@ const leadScope = user => browse.siteScope({}, accountScope(user), ['dealer', 's
 const priority = { $or: [{ score: { $gte: 80 } }, { priority: { $in: [true, 'high', 'High', 'Urgent', 'urgent'] } }, { stage: { $in: ['NEW ENQUIRIES', 'Imported'] } }] };
 
 async function leads(databases, query, user) {
-  return browse.leads(databases.lead, readQuery(query), accountScope(user));
+  return browse.leads(databases.lead, readQuery(query), accountScope(user), bydScope(['dealer','site','dealerName']));
 }
 async function calendar(databases, query, user) {
-  return browse.calendar(databases, readQuery(query), accountScope(user));
+  return browse.calendar(databases, readQuery(query), accountScope(user), bydScope);
 }
 async function today(databases, query, user, now = new Date()) {
   const date = day(now), next = addDays(date, 1), scope = accountScope(user);
   if (!scope.locked_site && query.filterSite && !/^all(?:\s|$)/i.test(query.filterSite)) scope.locked_site = query.filterSite;
-  const leadFilter = { $and: [browse.siteScope({}, scope, ['dealer', 'site', 'dealerName']), { isArchived: { $ne: true } }] };
-  const attention = { $and: [leadFilter, priority] };
+  const leadFilter = { $and: [bydScope(['dealer','site','dealerName']), browse.siteScope({}, scope, ['dealer', 'site', 'dealerName']), { isArchived: { $ne: true } }] };
+  const attention = { $and: [leadFilter, { $expr: require('./dashboardMetrics').active }, priority] };
   const collection = databases.lead.collection('leads');
   const [totalLeads, needsMe, records, events, deliveries, conversations] = await Promise.all([
     collection.countDocuments(leadFilter), collection.countDocuments(attention),
     collection.find(attention).sort({ score: -1, createdAt: -1, _id: -1 }).limit(5).toArray(),
-    browse.calendar(databases, { from: date, to: next, page: query.page || 1, limit: 25 }, scope),
-    browse.calendar(databases, { from: date, to: addDays(date, 7), category: 'delivery', limit: 1 }, scope),
-    databases.lead.collection('conversations').countDocuments({ $and: [browse.siteScope({}, scope, ['dealer', 'site']), { msgCount: { $gt: 0 } }] }),
+    browse.calendar(databases, { from: date, to: next, page: query.page || 1, limit: 25 }, scope, bydScope),
+    browse.calendar(databases, { from: date, to: addDays(date, 7), category: 'delivery', limit: 1 }, scope, bydScope),
+    databases.lead.collection('conversations').countDocuments({ $and: [bydScope(['dealer','site']), browse.siteScope({}, scope, ['dealer', 'site']), { msgCount: { $gt: 0 } }] }),
   ]);
   return { success: true, data: { date, site: scope.locked_site || 'All Sites',
-    stats: { totalLeads, needsMe, appointmentsToday: events.meta.sourceCounts.appointment, conversationPulse: conversations, deliveriesThisWeek: deliveries.pagination.total },
+    stats: { totalLeads, needsMe, appointmentsToday: events.meta.scheduledAppointments ?? events.meta.sourceCounts.appointment, conversationPulse: conversations, deliveriesThisWeek: deliveries.pagination.total },
     leads: records, events: events.data, eventPagination: events.pagination, nextDelivery: deliveries.data[0] || null, nextEvent: events.meta.nextEvent } };
 }
 const escapeIcs = value => String(value || '').replace(/\\/g, '\\\\').replace(/\r?\n/g, '\\n').replace(/[,;]/g, '\\$&');
