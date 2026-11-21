@@ -9,18 +9,17 @@ class SalesFloorOperations extends SalesFloorMobile {
   async summary(query, user) {
     const bounds = p.period(query.period), site = user.locked_site || query.site || user.site;
     const [appointments, deals, events, targets, tasks, config] = await Promise.all([
-      this.lead.collection('appointments').find(this.filter(user, query, 'appointments'), { projection: { createdAt: 1, status: 1 } }).toArray(),
+      metrics.appointmentsBooked(this.lead.collection('appointments'), this.filter(user, query, 'appointments'), bounds),
       this.lead.collection('deals').find(this.filter(user, query, 'deals'), { projection: { leadId: 1, contractSignedAt: 1 } }).toArray(),
       this.panel.collection('timelineevents').countDocuments(and(p.scope(user, query, ['site']), { type: 'Video sent', createdAt: { $gte: bounds.from, $lte: bounds.to } })),
       this.panel.collection('crmtargets').find(and(p.scope(user, query, ['site']), { period: bounds.month }), { projection: { targetUnits: 1 } }).toArray(),
       this.panel.collection('floor_tasks').find(and(p.scope(user, query, ['site']), { status: 'open' }), { projection: { dueAt: 1 } }).toArray(),
       this.config(site),
     ]);
-    const inPeriod = row => timed(row, bounds.from, bounds.to);
     const counts = await metrics.summary(this.lead.collection('leads'), this.filter(user, query), deals, config, bounds);
     const sold = deals.filter(row => timed(row, bounds.from, bounds.to, 'contractSignedAt'));
-    return { activeLeads: counts.activeLeads, unactionedLeads: counts.unactionedLeads,
-      appointmentsBooked: appointments.filter(row => inPeriod(row) && !['Cancelled', 'No Show'].includes(row.status)).length,
+    return { activeLeads: counts.activeLeads, unactionedLeads: counts.unactionedLeads, actionedLeads: counts.activeLeads - counts.unactionedLeads,
+      appointmentsBooked: appointments,
       overdueSla: tasks.filter(row => new Date(row.dueAt) < bounds.to).length + counts.overdueLeads,
       dealsCompleted: sold.length, conversionRate: counts.created ? Math.round(counts.converted / counts.created * 1000) / 10 : null,
       videosSent: events,
@@ -48,11 +47,16 @@ class SalesFloorOperations extends SalesFloorMobile {
   }
   async pulse(query, user) {
     if (!p.isManager(user)) fail(403, 'Management access required.');
+    const paginated = ['page', 'limit', 'followupPage', 'followupLimit'].some(key => Object.hasOwn(query, key));
+    if (paginated) metrics.pulsePages(query);
     const [deals, config] = await Promise.all([
       this.lead.collection('deals').find(this.filter(user, query, 'deals'), { projection: { leadId: 1, contractSignedAt: 1 } }).toArray(),
       this.config(user.locked_site || query.site || user.site),
     ]);
-    return { consultants: await metrics.pulse(this.lead.collection('leads'), this.filter(user, query), deals, config), config, updatedAt: new Date() };
+    const collection = this.lead.collection('leads'), filter = this.filter(user, query);
+    const data = paginated ? await metrics.pagedPulse(collection, filter, deals, config, query)
+      : { consultants: await metrics.pulse(collection, filter, deals, config) };
+    return { ...data, config, updatedAt: new Date() };
   }
   async ingestMessage(lead, text, messageId, at = new Date()) {
     const config = await this.config(lead.dealer || lead.site);

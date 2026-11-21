@@ -11,10 +11,14 @@ function expr(value, row, vars = {}) {
   if ('$literal' in value) return value.$literal;
   if (value.$cond) return truthy(evaluate(value.$cond[0])) ? evaluate(value.$cond[1]) : evaluate(value.$cond[2]);
   if (value.$and) return value.$and.every(item => truthy(evaluate(item)));
+  if (value.$or) return value.$or.some(item => truthy(evaluate(item)));
   if (value.$not) return !truthy(evaluate(value.$not[0]));
   if (value.$ne) return !same(...value.$ne.map(evaluate));
   if (value.$gte) { const [a,b] = value.$gte.map(evaluate); return a >= b; }
   if (value.$lte) { const [a,b] = value.$lte.map(evaluate); return a <= b; }
+  if (value.$gt) { const [a,b] = value.$gt.map(evaluate); return a > b; }
+  if (value.$toLower) return String(evaluate(value.$toLower)).toLowerCase();
+  if (value.$trim) return String(evaluate(value.$trim.input)).trim();
   if (value.$in) { const [a,b] = value.$in.map(evaluate); return b.some(item => same(a,item)); }
   if (value.$subtract) { const [a,b] = value.$subtract.map(evaluate); return a == null || b == null ? null : a - b; }
   if (value.$divide) { const [a,b] = value.$divide.map(evaluate); return a == null || b == null ? null : a / b; }
@@ -23,6 +27,7 @@ function expr(value, row, vars = {}) {
   if (value.$ifNull) return evaluate(value.$ifNull[0]) ?? evaluate(value.$ifNull[1]);
   if (value.$convert) {
     const item = evaluate(value.$convert.input);
+    if (value.$convert.to === 'double') return item == null ? (value.$convert.onNull ?? null) : Number.isFinite(Number(item)) ? Number(item) : (value.$convert.onError ?? null);
     if (value.$convert.to !== 'date') return String(item ?? '');
     const date = item == null ? null : new Date(item);
     return date && Number.isFinite(date.getTime()) ? date : null;
@@ -35,6 +40,10 @@ function aggregate(rows, pipeline) {
   let data = rows;
   for (const stage of pipeline) {
     if (stage.$match) data = data.filter(row => matches(row, stage.$match));
+    else if (stage.$facet) data = [Object.fromEntries(Object.entries(stage.$facet).map(([name,stages]) => [name,aggregate(data,stages)]))];
+    else if (stage.$count) data = data.length ? [{[stage.$count]:data.length}] : [];
+    else if ('$skip' in stage) data = data.slice(stage.$skip);
+    else if (stage.$limit) data = data.slice(0,stage.$limit);
     else if (stage.$project) data = data.map(row => Object.fromEntries([
       ...(!('_id' in stage.$project) ? [['_id',row._id]] : []),
       ...Object.entries(stage.$project).filter(([,v]) => v !== 0).map(([key,v]) => [key,v === 1 ? row[key] : expr(v,row)]),

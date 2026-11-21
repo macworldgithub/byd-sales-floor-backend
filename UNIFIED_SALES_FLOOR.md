@@ -20,6 +20,12 @@ The web app uses existing `/api/mobile` operations for PULSE, summary periods, s
 
 Customer merges now require management and a common dealership. Linked BYD enquiries also use the existing lead-merge workflow so activity and related records follow the surviving customer.
 
+## Dashboard periods and PULSE pagination
+
+Overview active and unactioned lead counts use the selected Melbourne Today, Weekly or MTD received-date range. The received date uses the first valid `leadDate`, `leadCreatedDate`, then `createdAt`, so importing an older enquiry does not make it a new lead today. Native contact timestamps, meaningful legacy `lastContact` values and recorded call/SMS/email counts establish contact; empty or "Never"/"N/A" placeholders do not. The current overdue backlog remains independent of the received-date cohort.
+
+The web PULSE requests `/api/mobile/pulse?page=1&limit=10&followupPage=1&followupLimit=10`. The consultant table and follow-up list each have independent pagination metadata, stable ordering, full matching totals and page-size limits of 50. Both lists paginate inside MongoDB, without constructing an array of every flagged customer. Out-of-range pages clamp to the final available page. Existing mobile requests without pagination parameters and consultant CSV exports retain their complete legacy response.
+
 ## Media transport
 
 The authenticated upload sequence is:
