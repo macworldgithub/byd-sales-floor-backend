@@ -8,6 +8,9 @@ const day = (now = new Date()) => new Intl.DateTimeFormat('en-CA', { timeZone: '
 const addDays = (value, count) => new Date(Date.parse(`${value}T12:00:00Z`) + count * 86400000).toISOString().slice(0, 10);
 function accountScope(user) {
   if (!user) fail(401, 'Authentication required.');
+  if (user.email && String(user.email).trim().toLowerCase() === 'nunawading@byd.com') {
+    return { ...user, locked_site: 'BYD Nunawading' };
+  }
   if (isAdmin(user) || (user.all_sites && policy.isManager(user))) return { ...user, locked_site: '' };
   const site = user.locked_site || user.site || user.allowed_sites?.[0];
   if (!site || /^all(?:\s|$)/i.test(site)) fail(403, 'A Sales Floor site must be assigned to this account.');

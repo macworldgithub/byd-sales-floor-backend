@@ -67,3 +67,27 @@ test('global Sales Floor admin browsing does not expand staff, other platforms o
   assert.equal((await authorize(admin, { ...options, method: 'POST' })).status, 403);
   assert.equal((await authorize(admin, { ...options, platform: 'crm', originalUrl: '/api/crm/leads', baseUrl: '/api/crm' })).status, 403);
 });
+
+test('nunawading@byd.com is a super admin strictly locked to site Nunawading', async () => {
+  const nunawadingUser = {
+    ...account(),
+    email: 'nunawading@byd.com',
+    role: 'super_admin',
+    site: 'BYD Nunawading',
+    locked_site: 'BYD Nunawading',
+    allowed_sites: ['BYD Nunawading'],
+    all_sites: false,
+    platform_access: ['sales_floor', 'crm']
+  };
+
+  // Floor browsing stays locked to BYD Nunawading even on global floor queries
+  const options = { platform: 'sales_floor', originalUrl: '/api/floor/leads', baseUrl: '/api/floor' };
+  const result = await authorize(nunawadingUser, options);
+  assert.equal(result.accepted, true);
+  assert.equal(result.req.user.role, 'super_admin');
+  assert.equal(result.req.user.locked_site, 'BYD Nunawading');
+
+  // Attempting to request another site fails
+  const otherSiteReq = await authorize(nunawadingUser, { ...options, site: 'BYD Melbourne City' });
+  assert.equal(otherSiteReq.status, 403);
+});

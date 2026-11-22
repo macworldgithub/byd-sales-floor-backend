@@ -19,6 +19,13 @@ function hasPlatform(user, platform) {
   return !Array.isArray(user.platform_access) || user.platform_access.includes(platform);
 }
 function resolveSite(user, requested) {
+  if (user && emailKey(user.email) === 'nunawading@byd.com') {
+    const explicit = requested && !/^(all|all sites|all locations|all yards|all departments|all sites & yards)$/i.test(requested);
+    if (explicit && siteKey(requested) !== siteKey('BYD Nunawading')) {
+      fail(403, 'You do not have access to this site.');
+    }
+    return 'BYD Nunawading';
+  }
   if (!Array.isArray(user.allowed_sites) || user.all_sites === true) return user.locked_site || '';
   if (!user.allowed_sites.length) fail(403, 'No sites are assigned to this account.');
   const explicit = requested && !/^(all|all sites|all locations|all yards|all departments|all sites & yards)$/i.test(requested);
